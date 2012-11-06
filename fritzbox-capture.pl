@@ -51,8 +51,11 @@ my $mech = WWW::Mechanize->new();
 debug("getting login page");
 $mech->get("$base/login.lua");
 my $ct = $mech->content;
-my ($challenge) = $ct =~m{var challenge = "([[:xdigit:]]+)"}
-    or die "no challenge found";
+my ($challenge) = $ct =~m{(?:var challenge = |login_init\()"([[:xdigit:]]+)"};
+if ( ! $challenge ) {
+    debug($ct);
+    die "no challenge found";
+}
 
 debug("challenge is $challenge, sending response");
 my $uiResp = "$challenge-". md5_hex(
