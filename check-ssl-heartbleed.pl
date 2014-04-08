@@ -244,7 +244,7 @@ sub show_data {
 	( my $h = unpack("H*",$d)) =~s{(..)}{$1 }g;
 	( my $c = $d ) =~s{[\x00-\x20\x7f-\xff]}{.}g;
 	my $hl = $show*3;
-	printf STDERR "%${hl}s  %${show}s\n",$h,$c;
+	printf STDERR "%-${hl}s  %-${show}s\n",$h,$c;
     }
     print STDERR "... repeated $repeat times ...\n" if $repeat;
 }
