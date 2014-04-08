@@ -30,7 +30,8 @@ Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
 			   starttls protocol (imap,smtp,http,pop)
   -T|--timeout T         - use timeout (default 5)
   -H|--heartbeats N      - number of heartbeats (default 1)
-  -s|--show-data         - show heartbeat response if vulnerable
+  -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
+                           parameter L specifies number of bytes per line (16)
   -q|--quiet             - don't show anything, exit 1 if vulnerable
   -h|--help              - this screen
 
@@ -61,7 +62,7 @@ GetOptions(
     'h|help' => sub { usage() },
     'T|timeout=i' => \$timeout,
     'H|heartbeats=i' => \$heartbeats,
-    's|show-data' => \$show,
+    's|show-data:i' => sub { $show = $_[1] || 16 },
     'q|quiet' => \$quiet,
     'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
@@ -212,7 +213,7 @@ sub show_data {
     my $lastd = '';
     my $repeat = 0;
     while ( $data ne '' ) {
-	my $d = substr($data,0,16,'' );
+	my $d = substr($data,0,$show,'' );
 	$repeat++,next if $d eq $lastd;
 	$lastd = $d;
 	if ( $repeat ) {
@@ -221,7 +222,8 @@ sub show_data {
 	}
 	( my $h = unpack("H*",$d)) =~s{(..)}{$1 }g;
 	( my $c = $d ) =~s{[\x00-\x20\x7f-\xff]}{.}g;
-	printf STDERR "%48s  %16s\n",$h,$c;
+	my $hl = $show*3;
+	printf STDERR "%${hl}s  %${show}s\n",$h,$c;
     }
     print STDERR "... repeated $repeat times ...\n" if $repeat;
 }
