@@ -173,16 +173,16 @@ sub _readframe {
 
 sub smtp_starttls {
     my $cl = shift;
-    <$cl>; # hello
-    print $cl "EHLO foo\r\n";
-    while (<$cl>) {
-	last if m{^\d+\s};
-    }
+    my ($code,$line);
+    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    die "server denies access: $line\n" if $code != 2;
+    print $cl "EHLO example.com\r\n";
+    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
     print $cl "STARTTLS\r\n";
-    my ($reply) = <$cl> =~m{^(\d+)};
-    verbose("...reply to starttls: $reply");
-    return 1 if $reply =~m{^2};
-    die "no starttls supported\n";
+    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    die "server denies starttls: $line\n" if $code != 2;
+    verbose("...reply to starttls: $line");
+    return 1;
 }
 
 sub imap_starttls {
