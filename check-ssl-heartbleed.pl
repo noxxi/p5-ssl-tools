@@ -25,7 +25,7 @@ sub usage {
     print STDERR "ERROR: @_\n" if @_;
     print STDERR <<USAGE;
 
-Check if server is vulnerable against heartbleet SSL attack (CVE-2014-0160)
+Check if server is vulnerable against heartbleed SSL attack (CVE-2014-0160)
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   --starttls proto[:arg] - start plain and upgrade to SSL with
 			   starttls protocol (imap,smtp,http,pop)
