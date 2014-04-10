@@ -88,6 +88,8 @@ if (@show_regex) {
 }
 
 my $dst = shift(@ARGV) or usage("no destination given");
+# auto add HTTPS port if not existing
+$dst .= ':443' if ($dst !~ /:\w+/);
 my $cl = IO::Socket::INET->new(PeerAddr => $dst, Timeout => $timeout)
     or die "failed to connect: $!";
 $starttls->($cl);
