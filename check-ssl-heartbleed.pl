@@ -27,6 +27,7 @@ my %starttls = (
     'http' => [ 8000, \&http_connect ],
     'imap' => [ 143, \&imap_starttls ],
     'pop'  => [ 110, \&pop_stls ],
+    'ftp'  => [ 21, \&ftp_auth ],
 );
 
 sub usage {
@@ -36,7 +37,7 @@ sub usage {
 Check if server is vulnerable against heartbleed SSL attack (CVE-2014-0160)
 Features:
 - can start with plain and upgrade with STARTTLS or similar commands with
-  IMAP, POP, SMTP and HTTP proxies
+  IMAP, POP, SMTP, FTP and HTTP proxies
 - heartbeat request is sent in two packets to circumvent simple packet
   matching IDS or packet filters
 - handshake is done with TLS1.0 for better compatibility, heartbeat uses
@@ -48,7 +49,7 @@ Features:
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -h|--help              - this screen
   --starttls proto[:arg] - start plain and upgrade to SSL with
-			   starttls protocol (imap,smtp,http,pop)
+			   starttls protocol (imap,smtp,http,pop,ftp)
   -T|--timeout T         - use timeout (default 5)
   -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
                            parameter L specifies number of bytes per line (16)
@@ -256,6 +257,17 @@ sub http_connect {
     }
     $hdr =~m{^HTTP/1\.[01]\s+2\d\d} and return 1;
     die "CONNECT failed: $hdr\n";
+}
+
+sub ftp_auth {
+    my $cl = shift;
+    my ($line,$code);
+    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    die "server denies access: $line\n" if $code != 2;
+    print $cl "AUTH TLS\r\n";
+    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    die "AUTH TLS denied: $line\n" if $code != 2;
+    return 1;
 }
 
 sub verbose {
