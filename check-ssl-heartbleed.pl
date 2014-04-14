@@ -26,7 +26,8 @@ my @show_regex;
 my $heartbeats = 1;
 my %starttls = (
     'smtp' => [ 25, \&smtp_starttls ],
-    'http' => [ 8000, \&http_connect ],
+    'http_proxy' => [ 8000, \&http_connect ],
+    'http_upgrade' => [ 80, \&http_upgrade ],
     'imap' => [ 143, \&imap_starttls ],
     'pop'  => [ 110, \&pop_stls ],
     'ftp'  => [ 21, \&ftp_auth ],
@@ -39,7 +40,7 @@ sub usage {
 Check if server is vulnerable against heartbleed SSL attack (CVE-2014-0160)
 Features:
 - can start with plain and upgrade with STARTTLS or similar commands with
-  IMAP, POP, SMTP, FTP and HTTP proxies
+  IMAP, POP, SMTP, FTP, HTTP and HTTP proxies
 - heartbeat request is sent in two packets to circumvent simple packet
   matching IDS or packet filters
 - handshake is done with TLS1.0 for better compatibility, heartbeat uses
@@ -50,8 +51,8 @@ Features:
 
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -h|--help              - this screen
-  --starttls proto[:arg] - start plain and upgrade to SSL with
-			   starttls protocol (imap,smtp,http,pop,ftp)
+  --starttls proto[:arg] - start plain and upgrade to SSL with starttls protocol
+                           (imap,smtp,http_upgrade,http_connect,pop,ftp)
   -q|--quiet             - don't show anything, exit 1 if vulnerable
   -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
                            parameter L specifies number of bytes per line (16)
@@ -72,7 +73,10 @@ Examples:
   $0 -R 'Cookie:.*' www.broken-site.com:443
 
   # check webserver via proxy
-  $0 --starttls http:www.google.com:443 proxy:8000
+  $0 --starttls http_connect:www.google.com:443 proxy:8000
+
+  # check webserver with http upgrade
+  $0 --starttls http_upgrade 127.0.0.1:631
 
   # check imap server, start with plain and upgrade
   $0 --starttls imap imap.gmx.net:143
@@ -128,7 +132,7 @@ my $cl = $INETCLASS->new(PeerAddr => $dst, Timeout => $timeout)
 setsockopt($cl,6,1,pack("l",1));
 
 # skip plaintext before starting SSL handshake
-$starttls->($cl);
+$starttls->($cl,$dst);
 
 # built and send ssl client hello
 my $hello_data = pack("nNn14Cn/a*C/a*n/a*",
@@ -147,8 +151,9 @@ print $cl pack(
 );
 
 my $use_version;
+my $err;
 while (1) {
-    my ($type,$ver,@msg) = _readframe($cl) or die "no reply";
+    my ($type,$ver,@msg) = _readframe($cl,\$err) or die "no reply ($err)";
     if ( $type == 22 and grep { $_->[0] == 0x0e } @msg ) {
 	# server hello done
 	$use_version = $ver;
@@ -167,7 +172,7 @@ for (1..$heartbeats) {
     print $cl substr($hb,1);
 }
 
-if ( my ($type,$ver,$buf) = _readframe($cl)) {
+if ( my ($type,$ver,$buf) = _readframe($cl,\$err)) {
     if ( $type == 21 ) {
 	verbose("received alert (probably not vulnerable)");
     } elsif ( $type != 24 ) {
@@ -185,17 +190,24 @@ if ( my ($type,$ver,$buf) = _readframe($cl)) {
 	verbose("GOOD proper heartbeat reply (not vulnerable)");
     }
 } else {
-    verbose("no reply - probably not vulnerable");
+    verbose("no reply($err) - probably not vulnerable");
 }
 
 sub _readframe {
-    my $cl = shift;
+    my ($cl,$rerr) = @_;
     my $len = 5;
     my $buf = '';
     vec( my $rin = '',fileno($cl),1 ) = 1;
     while ( length($buf)<$len ) {
-	select( my $rout = $rin,undef,undef,$timeout ) or return;
-	sysread($cl,$buf,$len-length($buf),length($buf)) or return;
+	if ( ! select( my $rout = $rin,undef,undef,$timeout )) {
+	    $$rerr = 'timeout';
+	    return;
+	};
+	if ( ! sysread($cl,$buf,$len-length($buf),length($buf))) {
+	    $$rerr = "eof";
+	    $$rerr .= " after ".length($buf)." bytes" if $buf ne '';
+	    return;
+	}
 	$len = unpack("x3n",$buf) + 5 if length($buf) == 5;
     }
     (my $type, my $ver,$buf) = unpack("Cnn/a*",$buf);
@@ -219,14 +231,15 @@ sub _readframe {
 
 sub smtp_starttls {
     my $cl = shift;
-    my ($code,$line);
-    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
-    die "server denies access: $line\n" if $code != 2;
+    my $last_status_line = qr/((\d)\d\d(?:\s.*)?)/;
+    my ($line,$code) = _readlines($cl,$last_status_line);
+    $code == 2 or die "server denies access: $line\n";
     print $cl "EHLO example.com\r\n";
-    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    ($line,$code) = _readlines($cl,$last_status_line);
+    $code == 2 or die "server did not accept EHLO: $line\n";
     print $cl "STARTTLS\r\n";
-    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
-    die "server denies starttls: $line\n" if $code != 2;
+    ($line,$code) = _readlines($cl,$last_status_line);
+    $code == 2 or die "server did not accept STARTTLS: $line\n";
     verbose("...reply to starttls: $line");
     return 1;
 }
@@ -242,6 +255,7 @@ sub imap_starttls {
 	verbose("...starttls: $_");
 	return 1;
     }
+    die "starttls failed";
 }
 
 sub pop_stls {
@@ -259,23 +273,36 @@ sub http_connect {
     my $cl = shift;
     $starttls_arg or die "no target host:port given";
     print $cl "CONNECT $starttls_arg HTTP/1.0\r\n\r\n";
-    my $hdr = '';
-    while (<$cl>) {
-	$hdr .= $_;
-	last if m{^\r?\n$};
-    }
-    $hdr =~m{^HTTP/1\.[01]\s+2\d\d} and return 1;
-    die "CONNECT failed: $hdr\n";
+    my $hdr = _readlines($cl,qr/\r?\n/);
+    $hdr =~m{\A(HTTP/1\.[01]\s+(\d\d\d)[^\r\n]*)};
+    die "CONNECT failed: $1" if $2 != 200;
+    verbose("...connect request: $1");
+    return 1;
+}
+
+sub http_upgrade {
+    my ($cl,$dst) = @_;
+    print $cl "OPTIONS * HTTP/1.1\r\n".
+	"Host: ".($dst =~m{^(.*):\w+$} && $1)."\r\n".
+	"Upgrade: TLS/1.0\r\n".
+	"Connection: Upgrade\r\n".
+	"\r\n";
+    my $hdr = _readlines($cl,qr/\r?\n/);
+    $hdr =~m{\A(HTTP/1\.[01]\s+(\d\d\d)[^\r\n]*)};
+    die "upgrade not accepted, code=$2 (expect 101): $1" if $2 != 101;
+    verbose("...tls upgrade request: $1");
+    return 1;
 }
 
 sub ftp_auth {
     my $cl = shift;
-    my ($line,$code);
-    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    my $last_status_line = qr/((\d)\d\d(?:\s.*)?)/;
+    my ($line,$code) = _readlines($cl,$last_status_line);
     die "server denies access: $line\n" if $code != 2;
     print $cl "AUTH TLS\r\n";
-    while (<$cl>) { last if ($line,$code) = m{^((\d)\d\d\s.*)}; }
+    ($line,$code) = _readlines($cl,$last_status_line);
     die "AUTH TLS denied: $line\n" if $code != 2;
+    verbose("...ftp auth: $line");
     return 1;
 }
 
@@ -304,4 +331,17 @@ sub show_data {
 	printf STDERR "%-${hl}s  %-${show}s\n",$h,$c;
     }
     print STDERR "... repeated $repeat times ...\n" if $repeat;
+}
+
+sub _readlines {
+    my ($cl,$stoprx) = @_;
+    my $buf = '';
+    while (<$cl>) { 
+	$buf .= $_;
+	return $buf if ! $stoprx;
+	next if ! m{\A$stoprx\Z};
+	return ( m{\A$stoprx\Z},$buf );
+    }
+    die "eof" if $buf eq '';
+    die "unexpected response: $buf";
 }
