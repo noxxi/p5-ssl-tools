@@ -21,6 +21,7 @@ my $starttls_arg;
 my $timeout = 5;
 my $quiet = 0;
 my $show = 0;
+my $show_ascii = 0;
 my $ssl_version = 'tlsv1';
 my @show_regex;
 my $heartbeats = 1;
@@ -56,6 +57,8 @@ Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -q|--quiet             - don't show anything, exit 1 if vulnerable
   -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
                            parameter L specifies number of bytes per line (16)
+  -a|--show-ascii [L]    - show heartbeat response ascii only if vulnerable, optional 
+                           parameter L specifies number of bytes per line (80)
   -R|--show-regex-data R - show data matching perl regex R. Option can be
                            used multiple times
   --ssl_version V        - specify SSL version to use, e.g. ssl3, tlsv1(default), 
@@ -97,6 +100,7 @@ GetOptions(
     'h|help' => sub { usage() },
     'T|timeout=i' => \$timeout,
     's|show-data:i' => sub { $show = $_[1] || 16 },
+    'a|show-ascii:i' => sub { $show_ascii = $_[1] || 80 },
     'R|show-regex-match:s' => \@show_regex,
     'q|quiet' => \$quiet,
     'H|heartbeats=i' => \$heartbeats,
@@ -179,7 +183,8 @@ if ( my ($type,$ver,$buf) = _readframe($cl,\$err)) {
 	verbose("unexpected reply type $type");
     } elsif ( length($buf)>3 ) {
 	verbose("BAD! got ".length($buf)." bytes back instead of 3 (vulnerable)");
-	show_data($buf) if $show;
+	show_data($buf,$show) if $show;
+	show_ascii($buf,$show_ascii) if $show_ascii;
 	if ( $show_regex ) {
 	    while ( $buf =~m{($show_regex)}g ) {
 		print STDERR $1."\n";
@@ -314,11 +319,11 @@ sub verbose {
 }
 
 sub show_data {
-    my $data = shift;
+    my ($data,$len) = @_;
     my $lastd = '';
     my $repeat = 0;
     while ( $data ne '' ) {
-	my $d = substr($data,0,$show,'' );
+	my $d = substr($data,0,$len,'' );
 	$repeat++,next if $d eq $lastd;
 	$lastd = $d;
 	if ( $repeat ) {
@@ -327,8 +332,26 @@ sub show_data {
 	}
 	( my $h = unpack("H*",$d)) =~s{(..)}{$1 }g;
 	( my $c = $d ) =~s{[\x00-\x20\x7f-\xff]}{.}g;
-	my $hl = $show*3;
-	printf STDERR "%-${hl}s  %-${show}s\n",$h,$c;
+	my $hl = $len*3;
+	printf STDERR "%-${hl}s  %-${len}s\n",$h,$c;
+    }
+    print STDERR "... repeated $repeat times ...\n" if $repeat;
+}
+
+sub show_ascii {
+    my ($data,$len) = @_;
+    my $lastd = '';
+    my $repeat = 0;
+    while ( $data ne '' ) {
+	my $d = substr($data,0,$len,'' );
+	$repeat++,next if $d eq $lastd;
+	$lastd = $d;
+	if ( $repeat ) {
+	    print STDERR "... repeated $repeat times ...\n";
+	    $repeat = 0;
+	}
+	( my $c = $d ) =~s{[\x00-\x20\x7f-\xff]}{.}g;
+	printf STDERR "%-${len}s\n",$c;
     }
     print STDERR "... repeated $repeat times ...\n" if $repeat;
 }
