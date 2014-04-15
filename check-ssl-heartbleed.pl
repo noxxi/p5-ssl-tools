@@ -51,20 +51,20 @@ Features:
 - can use IPv6
 
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
-  -h|--help              - this screen
-  --starttls proto[:arg] - start plain and upgrade to SSL with starttls protocol
-                           (imap,smtp,http_upgrade,http_connect,pop,ftp)
-  -q|--quiet             - don't show anything, exit 1 if vulnerable
-  -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
-                           parameter L specifies number of bytes per line (16)
-  -a|--show-ascii [L]    - show heartbeat response ascii only if vulnerable, optional 
-                           parameter L specifies number of bytes per line (80)
-  -R|--show-regex-data R - show data matching perl regex R. Option can be
-                           used multiple times
-  --ssl_version V        - specify SSL version to use, e.g. ssl3, tlsv1(default), 
-                           tlsv1_1, tlsv1_2
-  -H|--heartbeats N      - number of heartbeats (default 1)
-  -T|--timeout T         - use timeout (default 5)
+  -h|--help                - this screen
+  --starttls proto[:arg]   - start plain and upgrade to SSL with starttls protocol
+                             (imap,smtp,http_upgrade,http_connect,pop,ftp)
+  -q|--quiet               - don't show anything, exit 1 if vulnerable
+  -s|--show-data [L]       - show heartbeat response if vulnerable, optional 
+                             parameter L specifies number of bytes per line (16)
+  -a|--show-ascii [L]      - show heartbeat response ascii only if vulnerable, optional 
+                             parameter L specifies number of bytes per line (80)
+  -R|--show-regex-match R  - show data matching perl regex R. Option can be
+                             used multiple times
+  --ssl_version V          - specify SSL version to use, e.g. ssl3, tlsv1(default), 
+                             tlsv1_1, tlsv1_2
+  -H|--heartbeats N        - number of heartbeats (default 1)
+  -T|--timeout T           - use timeout (default 5)
 
 Examples:
   # check direct www, imaps .. server
