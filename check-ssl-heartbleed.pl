@@ -25,6 +25,7 @@ my $show_ascii = 0;
 my $ssl_version = 'tlsv1';
 my @show_regex;
 my $heartbeats = 1;
+my $postgresql = 0;
 my %starttls = (
     'smtp' => [ 25, \&smtp_starttls ],
     'http_proxy' => [ 8000, \&http_connect ],
@@ -54,6 +55,7 @@ Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -h|--help              - this screen
   --starttls proto[:arg] - start plain and upgrade to SSL with starttls protocol
                            (imap,smtp,http_upgrade,http_connect,pop,ftp)
+  -p|--postgresql        - use the postfix SSL init and set the default port to 5432
   -q|--quiet             - don't show anything, exit 1 if vulnerable
   -s|--show-data [L]     - show heartbeat response if vulnerable, optional 
                            parameter L specifies number of bytes per line (16)
@@ -104,6 +106,7 @@ GetOptions(
     'R|show-regex-match:s' => \@show_regex,
     'q|quiet' => \$quiet,
     'H|heartbeats=i' => \$heartbeats,
+	'p|postgresql' => \$postgresql,
     'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
 	my $st = $proto && $starttls{$proto};
@@ -127,6 +130,9 @@ if (@show_regex) {
     $show_regex = eval { qr{$show_regex} } || die "invalid regex: $show_regex";
 }
 
+# switch to 5432 if postgresql flag is given
+$default_port = 5432 if ($postgresql);
+
 my $dst = shift(@ARGV) or usage("no destination given");
 $dst .= ":$default_port" if $dst !~ m{^([^:]+|.+\]):\w+$};
 my $cl = $INETCLASS->new(PeerAddr => $dst, Timeout => $timeout)
@@ -137,6 +143,20 @@ setsockopt($cl,6,1,pack("l",1));
 
 # skip plaintext before starting SSL handshake
 $starttls->($cl,$dst);
+
+# if we do port 5432 (postgresql) we need to send a special postgresql hello to see if we actually support SSL
+if ($postgresql) {
+	# http://www.postgresql.org/docs/devel/static/protocol-message-formats.html: SSLRequest (F)
+	# first is int32(8), second is int32(80877103)
+	my $hello_pg = pack('N*', 8, 80877103);
+	print $cl $hello_pg;
+	my $buf;
+	$cl->recv($buf, 8);
+	# returns either S if SSL is support or N if it is not
+	if ($buf eq 'N') {
+		print "No SSL support on server\n";
+	}
+}
 
 # built and send ssl client hello
 my $hello_data = pack("nNn14Cn/a*C/a*n/a*",
