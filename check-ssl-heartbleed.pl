@@ -43,7 +43,7 @@ sub usage {
 Check if server is vulnerable against heartbleed SSL attack (CVE-2014-0160)
 Features:
 - can start with plain and upgrade with STARTTLS or similar commands with
-  IMAP, POP, SMTP, FTP, HTTP and HTTP proxies
+  IMAP, POP, SMTP, FTP, HTTP and HTTP proxies, PostgreSQL
 - heartbeat request is sent in two packets to circumvent simple packet
   matching IDS or packet filters
 - handshake is done with TLS1.0 for better compatibility, heartbeat uses
@@ -55,7 +55,7 @@ Features:
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -h|--help                - this screen
   --starttls proto[:arg]   - start plain and upgrade to SSL with starttls protocol
-                             (imap,smtp,http_upgrade,http_connect,pop,ftp)
+                             (imap,smtp,http_upgrade,http_connect,pop,ftp,postgresql)
   -q|--quiet               - don't show anything, exit 1 if vulnerable
   -c|--show-cert           - show some information about certificate
   -s|--show-data [L]       - show heartbeat response if vulnerable, optional 
