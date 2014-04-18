@@ -89,7 +89,7 @@ Examples:
   $0 --starttls http_upgrade 127.0.0.1:631
 
   # check webserver with http upgrade (GET /..)
-  $0 --starttls http_upgrade:get 127.0.0.1:631
+  $0 --starttls http_upgrade:get=/ 127.0.0.1:631
 
   # check imap server, start with plain and upgrade
   $0 --starttls imap imap.gmx.net:143
@@ -403,14 +403,17 @@ sub http_connect {
 sub http_upgrade {
     my ($cl,$hostname) = @_;
     my $rq;
-    if ( $starttls_arg && $starttls_arg =~m{get} ) {
-	$rq = "GET / HTTP/1.1\r\n".
+    if ( $starttls_arg && $starttls_arg =~m{^get(?:=(\S+))?}i ) {
+	my $path = $1 || '/';
+	$rq = "GET $path HTTP/1.1\r\n".
 	    "Host: $hostname\r\n".
 	    "Upgrade: TLS/1.0\r\n".
 	    "Connection: Upgrade\r\n".
 	    "\r\n";
     } else {
-	$rq = "OPTIONS * HTTP/1.1\r\n".
+	my $path = $starttls_arg && $starttls_arg =~m{^options=(\S+)}i
+	    ? $1:'*';
+	$rq = "OPTIONS $path HTTP/1.1\r\n".
 	    "Host: $hostname\r\n".
 	    "Upgrade: TLS/1.0\r\n".
 	    "Connection: Upgrade\r\n".
