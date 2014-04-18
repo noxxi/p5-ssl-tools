@@ -26,6 +26,7 @@ my $ssl_version = 'auto';
 my @show_regex;
 my $heartbeats = 1;
 my $show_cert;
+my $sni_hostname;
 my %starttls = (
     'smtp' => [ 25, \&smtp_starttls ],
     'http_proxy' => [ 8000, \&http_connect ],
@@ -55,18 +56,20 @@ Features:
 Usage: $0 [ --starttls proto[:arg] ] [ --timeout T ] host:port
   -h|--help                - this screen
   --starttls proto[:arg]   - start plain and upgrade to SSL with starttls protocol
-                             (imap,smtp,http_upgrade,http_connect,pop,ftp,postgresql)
+			     (imap,smtp,http_upgrade,http_connect,pop,ftp,postgresql)
   -q|--quiet               - don't show anything, exit 1 if vulnerable
   -c|--show-cert           - show some information about certificate
-  -s|--show-data [L]       - show heartbeat response if vulnerable, optional 
-                             parameter L specifies number of bytes per line (16)
-  -a|--show-ascii [L]      - show heartbeat response ascii only if vulnerable, optional 
-                             parameter L specifies number of bytes per line (80)
+  -s|--show-data [L]       - show heartbeat response if vulnerable, optional
+			     parameter L specifies number of bytes per line (16)
+  -a|--show-ascii [L]      - show heartbeat response ascii only if vulnerable, optional
+			     parameter L specifies number of bytes per line (80)
   -R|--show-regex-match R  - show data matching perl regex R. Option can be
-                             used multiple times
+			     used multiple times
   --ssl_version V          - specify SSL version to use, e.g. ssl3, tlsv1,
-                             tlsv1_1, tlsv1_2 or auto (default), which tries
+			     tlsv1_1, tlsv1_2 or auto (default), which tries
 			     until it gets a server hello back
+  --sni-hostname H         - specifiy hostname for SNI, set to '' to disable SNI
+			     will try with target host of not given
   -H|--heartbeats N        - number of heartbeats (default 1)
   -T|--timeout T           - use timeout (default 5)
 
@@ -76,14 +79,17 @@ Examples:
   $0 www.google.com:https
   $0 mail.google.com:imaps
 
-  # try to get Cookies 
+  # try to get Cookies
   $0 -R 'Cookie:.*' www.broken-site.com:443
 
   # check webserver via proxy
   $0 --starttls http_connect:www.google.com:443 proxy:8000
 
-  # check webserver with http upgrade
+  # check webserver with http upgrade (OPTIONS *...)
   $0 --starttls http_upgrade 127.0.0.1:631
+
+  # check webserver with http upgrade (GET /..)
+  $0 --starttls http_upgrade:get 127.0.0.1:631
 
   # check imap server, start with plain and upgrade
   $0 --starttls imap imap.gmx.net:143
@@ -108,6 +114,7 @@ GetOptions(
     'R|show-regex-match:s' => \@show_regex,
     'c|show-cert' => \$show_cert,
     'q|quiet' => \$quiet,
+    'sni-hostname:s' => \$sni_hostname,
     'H|heartbeats=i' => \$heartbeats,
     'starttls=s' => sub {
 	(my $proto,$starttls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
@@ -126,7 +133,7 @@ die "need Net::SSLeay to show certificate information"
 # cannot do it because we have no Net::SSLeay
 $show_cert ||= ! $quiet && eval { require Net::SSLeay };
 
-$ssl_version = 
+$ssl_version =
     lc($ssl_version) eq 'ssl3' ? 0x0300 :
     $ssl_version =~ m{^tlsv?1(?:_([12]))?}i ? 0x0301 + ($1||0) :
     0; # try possible versions
@@ -142,12 +149,19 @@ if (@show_regex) {
 
 my $dst = shift(@ARGV) or usage("no destination given");
 $dst .= ":$default_port" if $dst !~ m{^([^:]+|.+\]):\w+$};
+( my $hostname = $dst ) =~s{:\w+$}{};
+$hostname = $1 if $hostname =~m{^\[(.*)\]$};
+
+if ( ! defined $sni_hostname ) {
+    $sni_hostname = $hostname;
+    $sni_hostname = '' if $sni_hostname =~m{:|^[\d\.]+$};  # IP6/IP4
+}
 
 my $connect = sub {
-    my ($ssl_version,$ciphers) = @_;
+    my ($ssl_version,$sni,$ciphers) = @_;
 
     my $cl = $INETCLASS->new(
-	ref($dst) ? ( PeerAddr => $dst->[0], PeerPort => $dst->[1] ) 
+	ref($dst) ? ( PeerAddr => $dst->[0], PeerPort => $dst->[1] )
 	    : ( PeerAddr => $dst ),
 	Timeout => $timeout
     ) or die "failed to connect: $!";
@@ -157,7 +171,16 @@ my $connect = sub {
     # disable NAGLE to send heartbeat with multiple small packets
     setsockopt($cl,6,1,pack("l",1));
     # skip plaintext before starting SSL handshake
-    $starttls->($cl,$dst);
+    $starttls->($cl,$hostname);
+
+    # extensions
+    my $ext = '';
+    if ( defined $sni and $sni ne '' ) {
+	$ext .= pack('nn/a*', 0x00,   # server_name extension + length
+	    pack('n/a*',              # server_name list length
+		pack('Cn/a*',0,$sni)  # type host_name(0) + length/server_name
+	));
+    }
 
     # built and send ssl client hello
     my $hello_data = pack("nNn14Cn/a*C/a*n/a*",
@@ -167,7 +190,7 @@ my $connect = sub {
 	0, # session-id length
 	pack("C*",@$ciphers),
 	"\0", # compression null
-	'',   # no extensions
+	$ext,
     );
 
     $hello_data = substr(pack("N/a*",$hello_data),1); # 3byte length
@@ -225,9 +248,14 @@ my @tls12_ciphers = (
 my ($cl,$use_version);
 for my $ver ( $ssl_version ? $ssl_version : ( 0x303, 0x302, 0x301, 0x300 )) {
     my @ciphers = (( $ver == 0x303 ? @tls12_ciphers : ()), @ssl3_ciphers );
-    ($cl,$use_version) = $connect->( $ver, \@ciphers ) and last;
-    verbose("failed to connect with version 0x%x",$ver);
+    if ( $sni_hostname ) {
+	verbose("...try to connect with version 0x%x with SNI",$ver);
+	($cl,$use_version) = $connect->( $ver, $sni_hostname, \@ciphers ) and last;
+    }
+    verbose("...try to connect with version 0x%x w/o SNI",$ver);
+    ($cl,$use_version) = $connect->( $ver, $sni_hostname, \@ciphers ) and last;
 }
+
 # TODO: if everything fails we might have a F5 in front which cannot deal
 # with large client hellos.
 die "Failed to make a successful TLS handshake with peer.\n".
@@ -305,7 +333,7 @@ sub _readframe {
 		while ($certs ne '') {
 		    my $clen = unpack("N","\0".substr($certs,0,3,''));
 		    my $cert = substr($certs,0,$clen,'');
-		    length($cert) == $clen or 
+		    length($cert) == $clen or
 			die "invalid certificate length ($clen vs. ".length($cert).")";
 		    printf "[%d] %s\n",$i, cert2line($cert);
 		    $i++;
@@ -373,12 +401,22 @@ sub http_connect {
 }
 
 sub http_upgrade {
-    my ($cl,$dst) = @_;
-    print $cl "OPTIONS * HTTP/1.1\r\n".
-	"Host: ".($dst =~m{^(.*):\w+$} && $1)."\r\n".
-	"Upgrade: TLS/1.0\r\n".
-	"Connection: Upgrade\r\n".
-	"\r\n";
+    my ($cl,$hostname) = @_;
+    my $rq;
+    if ( $starttls_arg && $starttls_arg =~m{get} ) {
+	$rq = "GET / HTTP/1.1\r\n".
+	    "Host: $hostname\r\n".
+	    "Upgrade: TLS/1.0\r\n".
+	    "Connection: Upgrade\r\n".
+	    "\r\n";
+    } else {
+	$rq = "OPTIONS * HTTP/1.1\r\n".
+	    "Host: $hostname\r\n".
+	    "Upgrade: TLS/1.0\r\n".
+	    "Connection: Upgrade\r\n".
+	    "\r\n";
+    }
+    print $cl $rq;
     my $hdr = _readlines($cl,qr/\r?\n/);
     $hdr =~m{\A(HTTP/1\.[01]\s+(\d\d\d)[^\r\n]*)};
     die "upgrade not accepted, code=$2 (expect 101): $1" if $2 != 101;
@@ -400,7 +438,7 @@ sub ftp_auth {
 
 sub postgresql_init {
     my $cl = shift;
-    # magic header to initiate SSL: 
+    # magic header to initiate SSL:
     # http://www.postgresql.org/docs/devel/static/protocol-message-formats.html
     print $cl pack("NN",8,80877103);
     read($cl, my $buf,1 ) or die "did not get response from postgresql";
@@ -465,15 +503,15 @@ sub cert2line {
     my $not_before = Net::SSLeay::X509_get_notBefore($cert);
     my $not_after = Net::SSLeay::X509_get_notAfter($cert);
     $_ = Net::SSLeay::P_ASN1_TIME_put2string($_) for($not_before,$not_after);
-    my $subject = Net::SSLeay::X509_NAME_oneline( 
+    my $subject = Net::SSLeay::X509_NAME_oneline(
 	Net::SSLeay::X509_get_subject_name($cert));
     return "$subject | $not_before - $not_after";
 }
-	
+
 sub _readlines {
     my ($cl,$stoprx) = @_;
     my $buf = '';
-    while (<$cl>) { 
+    while (<$cl>) {
 	$buf .= $_;
 	return $buf if ! $stoprx;
 	next if ! m{\A$stoprx\Z};
@@ -482,4 +520,3 @@ sub _readlines {
     die "eof" if $buf eq '';
     die "unexpected response: $buf";
 }
-
