@@ -83,7 +83,7 @@ Examples:
   $0 -R 'Cookie:.*' www.broken-site.com:443
 
   # check webserver via proxy
-  $0 --starttls http_connect:www.google.com:443 proxy:8000
+  $0 --starttls http_proxy:www.google.com:443 proxy:8000
 
   # check webserver with http upgrade (OPTIONS *...)
   $0 --starttls http_upgrade 127.0.0.1:631
