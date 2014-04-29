@@ -126,12 +126,17 @@ GetOptions(
 );
 
 # use Net::SSLeay to print certificate information
-die "need Net::SSLeay to show certificate information"
-    if $show_cert && ! eval { require Net::SSLeay };
+# need version >= 1.46 for d2i_x509_bio
+my $load_netssleay = sub {
+    return 1 if eval { require Net::SSLeay } && $Net::SSLeay::VERSION >= 1.46;
+    return if shift; # try w/o error
+    die "need Net::SSLeay >= 1.46 to show certificate information";
+};
+$load_netssleay->(0) if $show_cert;
 
 # try to do show_cert by default if not quiet, but don't complain if we
 # cannot do it because we have no Net::SSLeay
-$show_cert ||= ! $quiet && eval { require Net::SSLeay };
+$show_cert ||= ! $quiet && $load_netssleay->(1) && -1;
 
 $ssl_version =
     lc($ssl_version) eq 'ssl3' ? 0x0300 :
@@ -335,7 +340,11 @@ sub _readframe {
 		    my $cert = substr($certs,0,$clen,'');
 		    length($cert) == $clen or
 			die "invalid certificate length ($clen vs. ".length($cert).")";
-		    printf "[%d] %s\n",$i, cert2line($cert);
+		    if ( my $line = eval { cert2line($cert) } ) {
+			printf "[%d] %s\n",$i, $line;
+		    } elsif ( $show_cert>0 ) {
+			die "failed to convert cert to string: $@";
+		    }
 		    $i++;
 		}
 	    }
