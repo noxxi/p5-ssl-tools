@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 # Copyright: Steffen Ullrich 2014
-# feel free to use, copy, modify without restrictions - NO WARRANTY
+# Public Domain: feel free to use, copy, modify without restrictions - NO WARRANTY
 
 use strict;
 use warnings;
