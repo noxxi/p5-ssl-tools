@@ -1,3 +1,0 @@
-check-ssl-heartbeat - check for heartbleed openssl vulnerability
-https_ocsp_bulk - check lots of sites for https verification, ciphers and OCSP revocation problems
-fritzbox-capture - use traffic capture feature of Fritz!Box from command line

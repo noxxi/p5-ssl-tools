@@ -1,6 +1,10 @@
 #!/usr/bin/perl
+# Copyright 2014 Steffen Ullrich <sullr@cpan.org>
+#   This program is free software; you can redistribute it and/or
+#   modify it under the same terms as Perl itself.
+#
 # checks lots of https sites for OCSP problems
-# https_ocsp_bulk  < list-of-sites.txt
+# USAGE: https_ocsp_bulk  < list-of-sites.txt
 
 use strict;
 use warnings;
