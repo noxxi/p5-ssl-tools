@@ -66,7 +66,7 @@ sub process {
 	return 0 if !$v;
 	my $p = 100*$v/$t;
 	my $f = 10 ** (2-int(log($p)/log(10)));
-	return int($p*$f)/$f;
+	return int($p*$f+0.5)/$f;
     };
     for( keys %stat) {
 	if (m{^total\.}) {
@@ -77,7 +77,7 @@ sub process {
     }
 
     my $t = template();
-    $t =~s{%{(?:([\w\.]+):)?([\w\-\.]+)}}{ sprintf( $1?"%".$1:"%s",$stat{$2}) }esg;
+    $t =~s{%{(?:([\w\.]+):)?([\w\-\.]+)}}{ sprintf( $1?"%".$1:"%s",$stat{$2}||0) }esg;
     $t;
 }
 

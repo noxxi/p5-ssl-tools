@@ -1,5 +1,8 @@
 # Collection of SSL Tools
 
+This repository contains various tools, which are intended to debug or analyze
+problems related to SSL/TLS.
+
 ## Heartbleed
 
 - check-ssl-heartbeat 
