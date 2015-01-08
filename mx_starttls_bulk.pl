@@ -23,6 +23,7 @@ my $max_task = 500;
 my $timeout  = 30;
 my $ciphers  = 'DEFAULT';
 my $ehlo_domain = hostname() || 'no.such.name.local';
+my $ismx = 0;
 
 # multi-line SMTP response, first number of status code in $1
 my $smtp_resp = qr{\A(?:\d\d\d-.*\r?\n)*(\d)\d\d .*\r?\n};
@@ -39,6 +40,9 @@ Usage: $0 [-d|--debug] [-h|--help] [--max-task N] [--hostname N] [domains]
   -h|--help       this help
   --max-task N    maximum number of parallel analysis tasks ($max_task)
   --hostname N    hostname used in EHLO ($ehlo_domain)
+  --ciphers C     use OpenSSL cipher string instead of 'DEFAULT'
+  --ismx          List of domains is list of MX for domains,
+		  i.e. no more MX lookup needed
   domains         List of domains, will read lines from STDIN if not given
 
 The result will contain a line for each given domain with multiple entries
@@ -101,11 +105,14 @@ GetOptions(
     'd|debug' => \$DEBUG,
     'max-task=i' => \$max_task,
     'hostname=s' => \$ehlo_domain,
+    'ciphers=s' => \$ciphers,
+    'ismx' => \$ismx,
 ) or $usage->();
 
 $usage->("no TLS1.2 support in your Net::SSLeay/OpenSSL")
     if ! defined &Net::SSLeay::CTX_tlsv1_2_new;
 
+my $initial = $ismx ? [ 'A', \&dns_name2a ]:[ 'MX', \&dns_mx ];
 
 my $next_domain = @ARGV ? sub { shift @ARGV } : sub {
     while (1) {
@@ -210,16 +217,17 @@ while (@task or !$end) {
 	push @task,{
 	    domain => $dom,
 	    expire => time() + $timeout,
-	    wantread => \&dns_mx,
+	    wantread => $initial->[1],
 	    state => 'dns',
 	    ssl_tests => [ @ssl_tests ],
 	};
 	DEBUG($task[-1],"new task");
-	$task[-1]{fd} = $res->bgsend($dom,'MX') or do {
+	$task[-1]{fd} = $res->bgsend($dom,$initial->[0]) or do {
 	    push @defer_task,pop(@task);
 	    $defer_task[-1]{resume} = sub {
 		my $task = shift;
-		$task->{fd} = $res->bgsend($task->{domain},'MX') and return 1;
+		$task->{fd} = $res->bgsend($task->{domain},$initial->[0])
+		    and return 1;
 		warn "failed to create fd for DNS/MX($!)\n";
 		0;
 	    };
@@ -291,9 +299,9 @@ sub dns_mx {
 	grep { $_->type eq 'MX' }
 	$pkt->answer;
     if (!@mx) {
-	DEBUG($task,"no mx found");
-	$task->{result} = '-nomx';
-	return;
+	# check if the given name is instead the MX itself
+	$task->{nomx} = 1;
+	@mx = $task->{domain};
     }
     my %name2ip  =
 	map { $_->type eq 'A' ? ( $_->name,$_->address ):() }
@@ -324,10 +332,17 @@ sub dns_name2a {
     };
     my ($ip) = map { $_->type eq 'A' ? ($_->address):() } $pkt->answer;
     if (!$ip) {
-	DEBUG($task,"no addr to mx found");
-	$task->{result} = '-nomxip';
+	if (delete $task->{nomx}) {
+	    DEBUG($task,"no mx found");
+	    $task->{result} = '-nomx';
+	} else {
+	    DEBUG($task,"no addr to mx found");
+	    $task->{result} = '-nomxip';
+	}
 	return;
     }
+    DEBUG($task,"assuming name is MX already")
+	if delete $task->{nomx};
     return tcp_connect($task,$ip);
 }
 
