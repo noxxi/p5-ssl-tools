@@ -3,11 +3,17 @@
 This repository contains various tools, which are intended to debug or analyze
 problems related to SSL/TLS.
 
-## Heartbleed
+## Analyzing state of TLS
 
-- check-ssl-heartbeat 
-  - check for heartbleed OpenSSL vulnerability
-  - supports various protocols requiring STARTTLS or similar
+- analyze.pl
+  - check support for various SSL/TLS version
+  - check which ciphers are support
+  - verfiy certificate
+  - check OCSP state
+  - check if SNI is supported and/or required
+  - display chain certificates and also local root if certification succeeded
+  - support direct connection and various form of STARTTLS
+  - ...
 
 ## SMTP TLS support (STARTTLS)
 
@@ -26,3 +32,10 @@ problems related to SSL/TLS.
 - https_ocsp_bulk 
   - check lots of sites for certificate verification, ciphers and OCSP revocation problems
   - synchronous, i.e one site gets checked after the other
+
+## Heartbleed
+
+- check-ssl-heartbeat 
+  - check for heartbleed OpenSSL vulnerability
+  - supports various protocols requiring STARTTLS or similar
+
