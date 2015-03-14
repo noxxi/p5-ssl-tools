@@ -10,21 +10,39 @@ use Socket;
 use IO::Socket::SSL 1.984;
 use IO::Socket::SSL::Utils;
 use Getopt::Long qw(:config posix_default bundling);
+use Socket qw(AF_INET unpack_sockaddr_in inet_ntoa);
 use Data::Dumper;
 
+my ($can_ipv6,$ioclass);
+BEGIN {
+    $can_ipv6 = IO::Socket::SSL->can_ipv6;
+    if ($can_ipv6) {
+	if (defined(&Socket::getaddrinfo)
+	    && defined(&Socket::inet_ntop)
+	    && defined(&Socket::unpack_sockaddr_in6)
+	    && defined(&Socket::AF_INET6)) {
+	    Socket->import(qw(AF_INET6 inet_ntop unpack_sockaddr_in6));
+	} elsif ( eval { require Socket6 }) {
+	    Socket6->import(qw(AF_INET6 inet_ntop unpack_sockaddr_in6));
+	} else {
+	    $can_ipv6 = undef;
+	}
+    }
+    $ioclass = $can_ipv6 || 'IO::Socket::INET';
+}
 
 my $can_ocsp = IO::Socket::SSL->can_ocsp;
 my $ocsp_cache = $can_ocsp && IO::Socket::SSL::OCSP_Cache->new;
 
 my %starttls = (
-    ''  => [ 443,undef, 'http' ],
-    'smtp' => [ 25, \&smtp_starttls, 'smtp' ],
-    'http_proxy' => [ 443, \&http_connect,'http' ],
+    ''             => [ 443,undef, 'http' ],
+    'smtp'         => [ 25, \&smtp_starttls, 'smtp' ],
+    'http_proxy'   => [ 443, \&http_connect,'http' ],
     'http_upgrade' => [ 80, \&http_upgrade,'http' ],
-    'imap' => [ 143, \&imap_starttls,'imap' ],
-    'pop'  => [ 110, \&pop_stls,'pop3' ],
-    'ftp'  => [ 21, \&ftp_auth,'ftp' ],
-    'postgresql'  => [ 5432, \&postgresql_init,'default' ],
+    'imap'         => [ 143, \&imap_starttls,'imap' ],
+    'pop'          => [ 110, \&pop_stls,'pop3' ],
+    'ftp'          => [ 21, \&ftp_auth,'ftp' ],
+    'postgresql'   => [ 5432, \&postgresql_init,'default' ],
 );
 
 my $verbose = 0;
@@ -32,7 +50,8 @@ my $timeout = 10;
 my ($stls,$stls_arg);
 my $capath;
 my $all_ciphers;
-my $show_chain;
+my $all_ip = 1;
+my $show_chain = 1;
 my $dump_chain;
 my %conf;
 my $max_cipher = 'HIGH:ALL';
@@ -42,9 +61,10 @@ GetOptions(
     'd|debug:1' => \$IO::Socket::SSL::DEBUG,
     'T|timeout=i' => \$timeout,
     'CApath=s' => \$capath,
-    'show-chain' => \$show_chain,
+    'show-chain!' => \$show_chain,
     'dump-chain' => \$dump_chain,
     'all-ciphers' => \$all_ciphers,
+    'all-ip!' => \$all_ip,
     'starttls=s' => sub {
 	($stls,$stls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
 	usage("invalid starttls $stls") if ! $starttls{$stls};
@@ -95,10 +115,13 @@ Options:
 			   Some servers or middleboxes have problems with this set
 			   so it can be reduced.
 
-  # what to show
+  # what to test and show
   -v|--verbose level     - verbose output
   --all-ciphers          - find out all supported ciphers
-  --show-chain           - show certificate chain
+  --all-ip               - check if all IP for host get same certificates, cipher...
+                           This is the default. Use --no-all-ip to disable.
+  --show-chain           - show certificate chain. This is the default. To disable
+                           use --no-show-chain.
   --dump_chain           - dump certificate chain, e.g. all certificates as PEM
 
 Examples:
@@ -129,17 +152,57 @@ for my $host (@ARGV) {
 }
 
 
-my $ioclass = IO::Socket::SSL->can_ipv6 || 'IO::Socket::INET';
 for my $test (@tests) {
     my ($host,$port,$name,$stls_sub,$scheme) = @$test;
-    VERBOSE(1,"checking host=$host port=$port".
+
+    my @ip;
+    if (defined &Socket::getaddrinfo) {
+	my ($err,@res) = Socket::getaddrinfo($host,$port);
+	for(@res) {
+	    push @ip,_addr2ip($_->{addr},$_->{family});
+	}
+    } elsif (defined &Socket6::getaddrinfo) {
+	my @res = Socket6::getaddrinfo($host,$port);
+	while (@res>=5) {
+	    my ($family,$addr) = (splice(@res,0,5))[0,3];
+	    push @ip,_addr2ip($addr,$family);
+	}
+    } else {
+	my $ip = Socket::inet_aton($host);
+	push @ip, $ip if $ip;
+    }
+    if (!@ip) {
+	warn "Found no IP address for $host\n";
+	next;
+    }
+
+    if (@ip>1) {
+	my (%have,@ip4,@ip6);
+	for(@ip) {
+	    if ($have{$_}++) {
+		next;
+	    } elsif (m{:}) {
+		push @ip6,$_
+	    } else {
+		push @ip4,$_
+	    }
+	}
+	# Prefer IPv4 even if host preference is different
+	@ip = (@ip4,@ip6);
+    }
+    VERBOSE(1,"checking host=$host(@ip) port=$port".
 	($stls ? " starttls=$stls":""));
 
+    my @problems;
+
     my $tcp_connect = sub {
-	my $tries = shift || 1;
+	my $use_ip = shift;
+	my $tries = 1;
+
+	TRY_IP:
 	my ($cl,$error);
 	my %ioargs = (
-	    PeerAddr => $host,
+	    PeerAddr => $use_ip || $ip[0],
 	    PeerPort => $port,
 	    Timeout => $timeout,
 	);
@@ -154,11 +217,16 @@ for my $test (@tests) {
 		$error = "tcp connect: $!";
 	    }
 	}
+	if ($error && ! $use_ip && @ip>1) {
+	    # retry with next IP
+	    VERBOSE(1,"$ip[0] failed permanently, trying next");
+	    push @problems, "failed tcp connect to $ip[0]";
+	    goto TRY_IP;
+	}
 	$cl or die $error;
     };
 
     my @handshakes;
-    my @problems;
 
     # basic connects without verification or any TLS extensions (OCSP)
     # find out usable version and ciphers. Because some hosts (like cloudflare)
@@ -245,6 +313,91 @@ for my $test (@tests) {
     }
 
 
+    my $ssl_upgrade_get_chain = sub {
+	my ($cl,%conf) = @_;
+	my (%verify_chain,@chain,@problems);
+	my $chain_failed;
+	if ( IO::Socket::SSL->start_SSL($cl, %conf,
+	    SSL_verifycn_scheme => 'none',
+	    SSL_verify_callback => sub {
+		my ($valid,$store,$str,$err,$cert,$depth) = @_;
+		$chain_failed = 1 if ! $valid;
+
+		# Since this only a temporary reference we should convert it
+		# directly to PEM.
+
+		my ($subject,$bits);
+		$subject = Net::SSLeay::X509_NAME_oneline(
+		    Net::SSLeay::X509_get_subject_name($cert));
+		if (!$depth) {
+		    my @san = $cl->peer_certificate('subjectAltNames');
+		    for( my $i=0;$i<@san;$i++) {
+			$san[$i] = 'DNS' if $san[$i] == 2;
+			$san[$i] .= ":".splice(@san,$i+1,1);
+		    }
+		    $subject .= " SAN=".join(",",@san) if @san;
+		}
+		if (my $pkey = Net::SSLeay::X509_get_pubkey($cert)) {
+		    $bits = eval { Net::SSLeay::EVP_PKEY_bits($pkey) };
+		    Net::SSLeay::EVP_PKEY_free($pkey);
+		}
+		my $pem = PEM_cert2string($cert);
+		$verify_chain{$pem} = [
+		    $bits||'???',
+		    $subject,
+		    join('|', grep { $_ } @{ CERT_asHash($cert)->{ocsp_uri} || []}),
+		    $pem,
+		    $depth,
+		    '-'
+		];
+		return 1;
+	    },
+	)) {
+	    for my $cert ( $peer_certificates->($cl) ) {
+		my ($subject,$bits);
+		$subject = Net::SSLeay::X509_NAME_oneline(
+		    Net::SSLeay::X509_get_subject_name($cert));
+		if ( !@chain) {
+		    my @san = $cl->peer_certificate('subjectAltNames');
+		    for( my $i=0;$i<@san;$i++) {
+			$san[$i] = 'DNS' if $san[$i] == 2;
+			$san[$i] .= ":".splice(@san,$i+1,1);
+		    }
+		    $subject .= " SAN=".join(",",@san) if @san;
+		}
+		if (my $pkey = Net::SSLeay::X509_get_pubkey($cert)) {
+		    $bits = eval { Net::SSLeay::EVP_PKEY_bits($pkey) };
+		    Net::SSLeay::EVP_PKEY_free($pkey);
+		}
+		my $pem = PEM_cert2string($cert);
+		my $vc = delete $verify_chain{$pem};
+		if (!$vc) {
+		    push @problems, "server sent unused chain certificate ".
+			"'$subject'";
+		}
+		push @chain,[
+		    $bits||'???',
+		    $subject,
+		    join('|', grep { $_ } @{ CERT_asHash($cert)->{ocsp_uri} || []}),
+		    $pem,
+		    $vc ? $vc->[4] : '-', # depth
+		    $#chain+1,
+		],
+	    }
+	    for (sort { $a->[4] <=> $b->[4] } values %verify_chain) {
+		push @chain,$_;
+	    }
+	}
+	my $fail;
+	if ($chain_failed) {
+	    $fail = "validation of certificate chain failed";
+	} elsif (!$cl->verify_hostname($name,$scheme)) {
+	    $fail = "validation of hostname failed";
+	}
+	return (\@chain,\@problems,$fail);
+    };
+
+
     # get chain info
     my (@cert_chain,@cert_chain_nosni);
     if ($show_chain || $dump_chain) {
@@ -257,74 +410,10 @@ for my $test (@tests) {
 	) {
 	    my ($conf,$chain) = @$_;
 	    my $cl = &$tcp_connect;
-	    my %verify_chain;
-	    if ( IO::Socket::SSL->start_SSL($cl, %$good_conf,
-		SSL_verify_callback => sub {
-		    my ($valid,$store,$str,$err,$cert,$depth) = @_;
-		    # Since this only a temporary reference we should convert it
-		    # directly to PEM.
-
-		    my ($subject,$bits);
-		    $subject = Net::SSLeay::X509_NAME_oneline(
-			Net::SSLeay::X509_get_subject_name($cert));
-		    if (!$depth) {
-			my @san = $cl->peer_certificate('subjectAltNames');
-			for( my $i=0;$i<@san;$i++) {
-			    $san[$i] = 'DNS' if $san[$i] == 2;
-			    $san[$i] .= ":".splice(@san,$i+1,1);
-			}
-			$subject .= " SAN=".join(",",@san) if @san;
-		    }
-		    if (my $pkey = Net::SSLeay::X509_get_pubkey($cert)) {
-			$bits = eval { Net::SSLeay::EVP_PKEY_bits($pkey) };
-			Net::SSLeay::EVP_PKEY_free($pkey);
-		    }
-		    my $pem = PEM_cert2string($cert);
-		    $verify_chain{$pem} = [
-			$bits||'???',
-			$subject,
-			join('|', grep { $_ } @{ CERT_asHash($cert)->{ocsp_uri} || []}),
-			$pem,
-			$depth,
-			'-'
-		    ];
-		    return 1;
-		},
-	    )) {
-		for my $cert ( $peer_certificates->($cl) ) {
-		    my ($subject,$bits);
-		    $subject = Net::SSLeay::X509_NAME_oneline(
-			Net::SSLeay::X509_get_subject_name($cert));
-		    if ( !@$chain) {
-			my @san = $cl->peer_certificate('subjectAltNames');
-			for( my $i=0;$i<@san;$i++) {
-			    $san[$i] = 'DNS' if $san[$i] == 2;
-			    $san[$i] .= ":".splice(@san,$i+1,1);
-			}
-			$subject .= " SAN=".join(",",@san) if @san;
-		    }
-		    if (my $pkey = Net::SSLeay::X509_get_pubkey($cert)) {
-			$bits = eval { Net::SSLeay::EVP_PKEY_bits($pkey) };
-			Net::SSLeay::EVP_PKEY_free($pkey);
-		    }
-		    my $pem = PEM_cert2string($cert);
-		    my $vc = delete $verify_chain{$pem};
-		    if (!$vc) {
-			push @problems, "server sent unused chain certificate ".
-			    "'$subject'";
-		    }
-		    push @$chain,[
-			$bits||'???',
-			$subject,
-			join('|', grep { $_ } @{ CERT_asHash($cert)->{ocsp_uri} || []}),
-			$pem,
-			$vc ? $vc->[4] : '-', # depth
-			$#$chain+1,
-		    ],
-		}
-		for (sort { $a->[4] <=> $b->[4] } values %verify_chain) {
-		    push @$chain,$_;
-		}
+	    my ($ch,$p) = $cl ? $ssl_upgrade_get_chain->($cl,%$conf) : ();
+	    push @problems,@$p;
+	    if ($ch) {
+		@$chain = @$ch;
 	    } else {
 		die "failed to connect with previously successful config: $SSL_ERROR";
 	    }
@@ -425,6 +514,67 @@ for my $test (@tests) {
 	}
     }
 
+    # Check if all IP return the same cipher, version and certificates
+    my %all_ip_diff;
+    my %cert_chain_alternatives;
+    if ($all_ip and @ip>1) {
+	my ($cipher,$protocol,@chain,$result);
+	for my $ip (@ip) {
+	    my $cl = eval { $tcp_connect->($ip) };
+	    if (!$cl) {
+		VERBOSE(1,"failed tcp connect to IP $ip: $@");
+		push @problems, "failed tcp connect to IP $ip: $@";
+		next;
+	    }
+	    my ($ch,$p,$res) = $ssl_upgrade_get_chain->($cl,%conf);
+	    $res ||= 'success';
+	    if (!$ch) {
+		VERBOSE(1,"failed SSL upgrade on IP $ip");
+		push @problems, "failed SSL upgrade on IP $ip";
+		next;
+	    }
+	    if (!@chain) {
+		# baseline
+		$result = $res;
+		@chain = @$ch;
+		$cipher = $cl->get_cipher;
+		$protocol = $cl->get_sslversion;
+		next;
+	    }
+	    my @diff;
+	    push @diff, "result: $res vs. $result" if $res ne $result;
+	    push @diff, "cipher:   ".($cl->get_cipher)." vs. $cipher"
+		if $cipher ne $cl->get_cipher;
+	    push @diff, "protocol: ".($cl->get_sslversion)." vs. $protocol"
+		if $protocol ne $cl->get_sslversion;
+	    if (Dumper(\@chain) ne Dumper($ch)) {
+		my $alt = $cert_chain_alternatives{ Dumper($ch) } ||= [ $ch ];
+		push @$alt,$ip;
+		my @ch0 = @chain;
+		my @ch1 = @$ch;
+		for(my $i=0;1;$i++) {
+		    my $ch0 = shift(@ch0);
+		    my $ch1 = shift(@ch1);
+		    last if ! $ch0 && !$ch1;
+		    if (!$ch0) {
+			push @diff, "certificate #$i is additional - $ch1->[1]";
+		    } elsif (!$ch1) {
+			push @diff, "certificate #$i is missing - $ch0->[1]";
+		    } elsif ($ch0->[3] ne $ch1->[3]) {
+			push @diff, "certificate #$i differs";
+		    }
+		}
+	    }
+	    if (@diff) {
+		VERBOSE(1,"different results for SSL upgrade on $ip than on $ip[0]");
+		my $alt = $all_ip_diff{ Dumper(\@diff) } ||= [ \@diff ];
+		push @$alt,$ip;
+	    } else {
+		VERBOSE(1,"same results for SSL upgrade on $ip compared to $ip[0]");
+	    }
+	}
+    }
+
     # check out all supported ciphers
     my @ciphers;
     {
@@ -453,7 +603,7 @@ for my $test (@tests) {
     my $server_cipher_order;
     if (@ciphers>=2) {
 	my %used_cipher;
-	for( "$ciphers[0][1]:$ciphers[1][1]","$ciphers[1][1]:$ciphers[0][1]" ) {
+	for( "$ciphers[0][1]:$ciphers[1][1]:$max_cipher","$ciphers[1][1]:$ciphers[0][1]:$max_cipher" ) {
 	    my $cl = &$tcp_connect;
 	    if ( IO::Socket::SSL->start_SSL($cl,
 		%conf,
@@ -462,6 +612,7 @@ for my $test (@tests) {
 		SSL_hostname => '',
 		SSL_cipher_list => $_,
 	    )) {
+		VERBOSE(3,"tried with cipher list '$_' -> ".$cl->get_cipher);
 		$used_cipher{$cl->get_cipher}++;
 	    } else {
 		warn "failed to SSL handshake with SSL_cipher_list=$_: $SSL_ERROR";
@@ -497,15 +648,29 @@ for my $test (@tests) {
     );
     print " * SNI supported        : $sni_status\n" if $sni_status;
     print " * certificate verified : $verify_status\n";
+    for(sort values %all_ip_diff) {
+	my ($diff,@ip) = @$_;
+	print " * different results on @ip\n";
+	print "   * $_\n" for(@$diff);
+    }
     if ($show_chain) {
+	print " * chain on $ip[0]\n";
 	for(my $i=0;$i<@cert_chain;$i++) {
 	    my $c = $cert_chain[$i];
 	    print "   * [$c->[5]/$c->[4]] bits=$c->[0], ocsp_uri=$c->[2], $c->[1]\n"
 	}
 	if (@cert_chain_nosni) {
-	    print " * chain without SNI\n";
+	    print " * chain on $ip[0] without SNI\n";
 	    for(my $i=0;$i<@cert_chain_nosni;$i++) {
 		my $c = $cert_chain_nosni[$i];
+		print "   * [$c->[5]/$c->[4]] bits=$c->[0], ocsp_uri=$c->[2], $c->[1]\n"
+	    }
+	}
+	for (sort values %cert_chain_alternatives) {
+	    my ($chain,@ip) = @$_;
+	    print " * chain on @ip\n";
+	    for(my $i=0;$i<@$chain;$i++) {
+		my $c = $chain->[$i];
 		print "   * [$c->[5]/$c->[4]] bits=$c->[0], ocsp_uri=$c->[2], $c->[1]\n"
 	    }
 	}
@@ -650,6 +815,18 @@ sub _readlines {
     die "unexpected response: $buf";
 }
 
+sub _addr2ip {
+    my ($addr,$family) = @_;
+    if ($family == AF_INET) {
+	(undef,$addr) = unpack_sockaddr_in($addr);
+	return inet_ntoa($addr);
+    } elsif (!$can_ipv6) {
+	return ();
+    } else {
+	(undef,$addr) = unpack_sockaddr_in6($addr);
+	return inet_ntop(AF_INET6(),$addr);
+    }
+}
 
 
 sub VERBOSE {
