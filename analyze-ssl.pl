@@ -319,7 +319,7 @@ for my $test (@tests) {
 	    SSL_verify_mode => 0
 	)) {
 	    VERBOSE(1,"failed without SNI: $SSL_ERROR");
-	    $sni_status = "essential";
+	    $sni_status = "SSL upgrade fails without SNI";
 	}
     }
 
