@@ -310,12 +310,23 @@ for my $test (@tests) {
     } else {
 	VERBOSE(1,"SNI success");
 	$sni_status = 'ok';
+
+	# check if it works without SNI
+	my $cl = &$tcp_connect;
+	if (!IO::Socket::SSL->start_SSL($cl,
+	    %$good_conf, 
+	    SSL_hostname => '', 
+	    SSL_verify_mode => 0
+	)) {
+	    VERBOSE(1,"failed without SNI: $SSL_ERROR");
+	    $sni_status = "essential";
+	}
     }
 
 
     my $ssl_upgrade_get_chain = sub {
 	my ($cl,%conf) = @_;
-	my (%verify_chain,@chain,@problems);
+	my (%verify_chain,@chain,@problems,$fail);
 	my $chain_failed;
 	if ( IO::Socket::SSL->start_SSL($cl, %conf,
 	    SSL_verifycn_scheme => 'none',
@@ -387,12 +398,13 @@ for my $test (@tests) {
 	    for (sort { $a->[4] <=> $b->[4] } values %verify_chain) {
 		push @chain,$_;
 	    }
-	}
-	my $fail;
-	if ($chain_failed) {
-	    $fail = "validation of certificate chain failed";
-	} elsif (!$cl->verify_hostname($name,$scheme)) {
-	    $fail = "validation of hostname failed";
+	    if ($chain_failed) {
+		$fail = "validation of certificate chain failed";
+	    } elsif (!$cl->verify_hostname($name,$scheme)) {
+		$fail = "validation of hostname failed";
+	    }
+	} else {
+	    $fail = $SSL_ERROR || 'unknown handshake error';
 	}
 	return (\@chain,\@problems,$fail);
     };
@@ -609,7 +621,6 @@ for my $test (@tests) {
 		%conf,
 		SSL_version => $use_version,
 		SSL_verify_mode => 0,
-		SSL_hostname => '',
 		SSL_cipher_list => $_,
 	    )) {
 		VERBOSE(3,"tried with cipher list '$_' -> ".$cl->get_cipher);
