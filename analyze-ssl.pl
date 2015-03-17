@@ -405,6 +405,7 @@ for my $test (@tests) {
 	    }
 	} else {
 	    $fail = $SSL_ERROR || 'unknown handshake error';
+	    return;
 	}
 	return (\@chain,\@problems,$fail);
     };
