@@ -198,11 +198,13 @@ for my $test (@tests) {
     my $tcp_connect = sub {
 	my $use_ip = shift;
 	my $tries = 1;
+        my $ip_index = 0;
+        my $ip_index_max = @ip - 1;
 
 	TRY_IP:
 	my ($cl,$error);
 	my %ioargs = (
-	    PeerAddr => $use_ip || $ip[0],
+	    PeerAddr => $use_ip || $ip[$ip_index],
 	    PeerPort => $port,
 	    Timeout => $timeout,
 	);
@@ -217,10 +219,11 @@ for my $test (@tests) {
 		$error = "tcp connect: $!";
 	    }
 	}
-	if ($error && ! $use_ip && @ip>1) {
+	if ($error && ! $use_ip && @ip>1 && $ip_index < $ip_index_max) {
 	    # retry with next IP
-	    VERBOSE(1,"$ip[0] failed permanently, trying next");
-	    push @problems, "failed tcp connect to $ip[0]";
+	    VERBOSE(1,"$ip[$ip_index] failed permanently, trying next");
+	    push @problems, "failed tcp connect to $ip[$ip_index]";
+	    $ip_index = $ip_index + 1;
 	    goto TRY_IP;
 	}
 	$cl or die $error;
