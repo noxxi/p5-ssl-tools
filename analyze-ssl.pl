@@ -217,13 +217,20 @@ for my $test (@tests) {
 		$error = "tcp connect: $!";
 	    }
 	}
-	if ($error && ! $use_ip && @ip>1) {
-	    # retry with next IP
-	    VERBOSE(1,"$ip[0] failed permanently, trying next");
-	    push @problems, "failed tcp connect to $ip[0]";
+	return $cl if $cl;
+	$error ||= "unknown error";
+	die $error if $use_ip; # no retry
+
+	# retry with next IP
+	my $failed = shift(@ip);
+	chomp($error);
+	push @problems, "failed tcp connect to $failed: $error";
+	if (@ip) {
+	    VERBOSE(1,"$failed failed permanently '$error', trying next");
 	    goto TRY_IP;
 	}
-	$cl or die $error;
+	VERBOSE(1,"$failed failed permanently '$error', no more IP to try");
+	die $error."\n";
     };
 
     my @handshakes;
@@ -405,7 +412,6 @@ for my $test (@tests) {
 	    }
 	} else {
 	    $fail = $SSL_ERROR || 'unknown handshake error';
-	    return;
 	}
 	return (\@chain,\@problems,$fail);
     };
