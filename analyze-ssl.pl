@@ -437,10 +437,11 @@ for my $test (@tests) {
 		die "failed to connect with previously successful config: $SSL_ERROR";
 	    }
 	}
-	# if same certificate ignore nosni
-	if (@cert_chain_nosni
-	    && $cert_chain_nosni[0][3] eq $cert_chain[0][3]) {
-	    VERBOSE(2,"same certificate in without SNI");
+	# if same chain ignore nosni
+	if (@cert_chain_nosni and 
+	    @cert_chain_nosni == @cert_chain and
+	    ! grep { $cert_chain_nosni[$_][3] ne $cert_chain[$_][3] } (0..$#cert_chain_nosni)) {
+	    VERBOSE(2,"same certificate chain in without SNI");
 	    @cert_chain_nosni = ();
 	}
     }
