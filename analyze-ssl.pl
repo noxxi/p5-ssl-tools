@@ -320,13 +320,23 @@ for my $test (@tests) {
 
 	# check if it works without SNI
 	my $cl = &$tcp_connect;
+	my $fail;
 	if (!IO::Socket::SSL->start_SSL($cl,
 	    %$good_conf, 
 	    SSL_hostname => '', 
-	    SSL_verify_mode => 0
+	    SSL_verifycn_name => $conf{SSL_hostname}||$host, 
+	    SSL_verify_callback => sub {
+		my ($ok) = @_;
+		$fail++ if ! $ok;
+		return 1;
+	    }
 	)) {
 	    VERBOSE(1,"failed without SNI: $SSL_ERROR");
 	    $sni_status = "SSL upgrade fails without SNI";
+	}
+	if ($fail) {
+	    VERBOSE(1,"certificate verify failed without SNI");
+	    $sni_status = "certificate verify fails without SNI";
 	}
     }
 
@@ -463,6 +473,7 @@ for my $test (@tests) {
 	} elsif ( $cl->verify_hostname( $name,$scheme )) {
 	    VERBOSE(1,"certificate verify success");
 	    $verify_status = 'ok';
+	    $verify_status .= " (needs SNI)" if $sni_status =~ /fails without/;
 	    %conf = %$good_conf = ( %conf,
 		SSL_verifycn_scheme => $scheme,
 		SSL_verifycn_name => $name,
