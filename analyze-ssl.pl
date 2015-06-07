@@ -308,6 +308,7 @@ for my $test (@tests) {
     }
 
     my $sni_status;
+    my $need_sni;
     if (!$sni) {
 	if ($version =~m{^TLS}) {
 	    VERBOSE(1,"SNI FAIL!");
@@ -333,6 +334,7 @@ for my $test (@tests) {
 	)) {
 	    VERBOSE(1,"failed without SNI: $SSL_ERROR");
 	    $sni_status = "SSL upgrade fails without SNI";
+	    $need_sni = 1;
 	}
 	if ($fail) {
 	    VERBOSE(1,"certificate verify failed without SNI");
@@ -423,7 +425,7 @@ for my $test (@tests) {
 	} else {
 	    $fail = $SSL_ERROR || 'unknown handshake error';
 	}
-	return (\@chain,\@problems,$fail);
+	return (@chain ? \@chain : undef,\@problems,$fail);
     };
 
 
@@ -432,7 +434,7 @@ for my $test (@tests) {
     if ($show_chain || $dump_chain) {
 	for(
 	    [ $good_conf, \@cert_chain ],
-	    ! $good_conf->{SSL_hostname} ? ()
+	    ( $need_sni || ! $good_conf->{SSL_hostname}) ? ()
 		# cloudflare has different cipher list without SNI, so don't
 		# enforce the existing one
 		: ([ { %$good_conf, SSL_cipher_list => undef, SSL_hostname => '' }, \@cert_chain_nosni ])
