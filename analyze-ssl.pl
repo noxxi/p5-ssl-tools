@@ -55,6 +55,7 @@ my $show_chain = 1;
 my $dump_chain;
 my %conf;
 my $max_cipher = 'HIGH:ALL';
+my $default_cipher = '';
 GetOptions(
     'h|help' => sub { usage() },
     'v|verbose:1' => \$verbose,
@@ -67,11 +68,12 @@ GetOptions(
     'all-ip!' => \$all_ip,
     'starttls=s' => sub {
 	($stls,$stls_arg) = $_[1] =~m{^(\w+)(?::(.*))?$};
-	usage("invalid starttls $stls") if ! $starttls{$stls};
+	usage("invalid starttls $stls") if ! $starttls{$stls||'whatever'};
     },
     'cert=s' => \$conf{SSL_cert_file},
     'key=s'  => \$conf{SSL_key_file},
     'name=s' => \$conf{SSL_hostname},
+    'cipher=s' => \$default_cipher,
     'max-cipher=s' => \$max_cipher,
 ) or usage("bad usage");
 @ARGV or usage("no hosts given");
@@ -111,6 +113,7 @@ Options:
   --key  key             - use given key for client authentication (default: cert)
   --name name            - use given name as server name in verification and SNI
 			   instead of host (useful if target is given as IP)
+  --cipher set           - default cipher set to try, default OpenSSL default
   --max-cipher set       - maximum cipher set to try, default HIGH:ALL.
 			   Some servers or middleboxes have problems with this set
 			   so it can be reduced.
@@ -244,7 +247,7 @@ for my $test (@tests) {
     my $try_sslversion = sub {
 	my $v = shift;
 	my (@protocols,@err);
-	for my $ciphers ( '',$max_cipher ) {
+	for my $ciphers ( $default_cipher,$max_cipher ) {
 	    my $cl = &$tcp_connect;
 	    if ( IO::Socket::SSL->start_SSL($cl,
 		%conf,
@@ -437,7 +440,7 @@ for my $test (@tests) {
 	    ( $need_sni || ! $good_conf->{SSL_hostname}) ? ()
 		# cloudflare has different cipher list without SNI, so don't
 		# enforce the existing one
-		: ([ { %$good_conf, SSL_cipher_list => undef, SSL_hostname => '' }, \@cert_chain_nosni ])
+		: ([ { %$good_conf, SSL_cipher_list => $default_cipher || undef, SSL_hostname => '' }, \@cert_chain_nosni ])
 	) {
 	    my ($conf,$chain) = @$_;
 	    my $cl = &$tcp_connect;
