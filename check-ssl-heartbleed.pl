@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 # Copyright: Steffen Ullrich 2014
 # Public Domain: feel free to use, copy, modify without restrictions - NO WARRANTY
 

@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 #
 # Copyright 2013..2015 Steffen Ullrich <sullr@cpan.org>
 #   This program is free software; you can redistribute it and/or
