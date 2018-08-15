@@ -56,6 +56,7 @@ my $dump_chain;
 my %conf;
 my $max_cipher = 'HIGH:ALL';
 my $default_cipher = '';
+my $sleep = 0;
 GetOptions(
     'h|help' => sub { usage() },
     'v|verbose:1' => \$verbose,
@@ -75,6 +76,7 @@ GetOptions(
     'name=s' => \$conf{SSL_hostname},
     'cipher=s' => \$default_cipher,
     'max-cipher=s' => \$max_cipher,
+    'sleep=s' => \$sleep,
 ) or usage("bad usage");
 @ARGV or usage("no hosts given");
 my %default_ca =
@@ -106,6 +108,8 @@ Options:
   --starttls proto[:arg] - start plain and upgrade to SSL with starttls protocol
 			   (imap,smtp,http_upgrade,http_proxy,pop,ftp,postgresql)
   -T|--timeout T         - use timeout (default 10)
+  --sleep X              - sleep X seconds between requests to reduce load on server
+                           can also be float like 0.1
 
   # SSL specific settings
   --CApath file|dir      - use given dir|file instead of system default CA store
@@ -249,7 +253,7 @@ for my $test (@tests) {
 	my (@protocols,@err);
 	for my $ciphers ( $default_cipher,$max_cipher ) {
 	    my $cl = &$tcp_connect;
-	    if ( IO::Socket::SSL->start_SSL($cl,
+	    if ( _startssl($cl,
 		%conf,
 		SSL_version => $v,
 		SSL_verify_mode => 0,
@@ -301,7 +305,8 @@ for my $test (@tests) {
     }
 
     if ($best_version) {
-	VERBOSE(1,"successful connect with $best_version, cipher=$cipher, sni=$sni and no other TLS extensions");
+	VERBOSE(1,"successful connect with $best_version, cipher=$cipher, sni="
+	    . ($sni||'<undef>')." and no other TLS extensions");
     } elsif ($sni) {
 	$sni = '';
 	# retry without SNI
@@ -325,7 +330,7 @@ for my $test (@tests) {
 	# check if it works without SNI
 	my $cl = &$tcp_connect;
 	my $fail;
-	if (!IO::Socket::SSL->start_SSL($cl,
+	if (!_startssl($cl,
 	    %$good_conf, 
 	    SSL_hostname => '', 
 	    SSL_verifycn_name => $conf{SSL_hostname}||$host, 
@@ -350,7 +355,7 @@ for my $test (@tests) {
 	my ($cl,%conf) = @_;
 	my (%verify_chain,@chain,@problems,$fail);
 	my $chain_failed;
-	if ( IO::Socket::SSL->start_SSL($cl, %conf,
+	if ( _startssl($cl, %conf,
 	    SSL_verifycn_scheme => 'none',
 	    SSL_verify_callback => sub {
 		my ($valid,$store,$str,$err,$cert,$depth) = @_;
@@ -464,7 +469,7 @@ for my $test (@tests) {
     # check verification against given/builtin CA w/o OCSP
     my $verify_status;
     my $cl = &$tcp_connect;
-    if ( IO::Socket::SSL->start_SSL($cl, %$good_conf,
+    if ( _startssl($cl, %$good_conf,
 	SSL_verify_mode => SSL_VERIFY_PEER,
 	SSL_ocsp_mode => SSL_OCSP_NO_STAPLE,
 	SSL_verifycn_scheme => 'none',
@@ -508,7 +513,7 @@ for my $test (@tests) {
     if ( $can_ocsp && $verify_status eq 'ok' ) {
 	my $cl = &$tcp_connect;
 	$conf{SSL_ocsp_cache} = $ocsp_cache;
-	if ( IO::Socket::SSL->start_SSL($cl, %conf)) {
+	if ( _startssl($cl, %conf)) {
 	    if ( ${*$cl}{_SSL_ocsp_verify} ) {
 		$ocsp_staple = 'got stapled response',
 	    } else {
@@ -527,7 +532,7 @@ for my $test (@tests) {
     if ( $can_ocsp && $verify_status eq 'ok' ) {
 	my $cl = &$tcp_connect;
 	$conf{SSL_ocsp_mode} |= SSL_OCSP_FULL_CHAIN;
-	if ( ! IO::Socket::SSL->start_SSL($cl, %conf)) {
+	if ( ! _startssl($cl, %conf)) {
 	    die sprintf("failed with SSL_ocsp_mode=%b, even though it succeeded with default mode",
 		$conf{SSL_ocsp_mode});
 	}
@@ -617,7 +622,7 @@ for my $test (@tests) {
 	my $c = "$max_cipher:eNULL";
 	while ($all_ciphers || @ciphers<2 ) {
 	    my $cl = &$tcp_connect;
-	    if ( IO::Socket::SSL->start_SSL($cl,
+	    if ( _startssl($cl,
 		%conf,
 		SSL_verify_mode => 0,
 		SSL_version => $conf{SSL_version},
@@ -641,7 +646,7 @@ for my $test (@tests) {
 	my %used_cipher;
 	for( "$ciphers[0][1]:$ciphers[1][1]:$max_cipher","$ciphers[1][1]:$ciphers[0][1]:$max_cipher" ) {
 	    my $cl = &$tcp_connect;
-	    if ( IO::Socket::SSL->start_SSL($cl,
+	    if ( _startssl($cl,
 		%conf,
 		SSL_version => $use_version,
 		SSL_verify_mode => 0,
@@ -861,6 +866,12 @@ sub _addr2ip {
 	(undef,$addr) = unpack_sockaddr_in6($addr);
 	return inet_ntop(AF_INET6(),$addr);
     }
+}
+
+sub _startssl {
+    select(undef,undef,undef,$sleep) if $sleep;
+    #VERBOSE(4,"start_SSL(@_)");
+    IO::Socket::SSL->start_SSL(@_)
 }
 
 
