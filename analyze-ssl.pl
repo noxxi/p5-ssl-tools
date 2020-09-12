@@ -129,7 +129,7 @@ Options:
                            This is the default. Use --no-all-ip to disable.
   --show-chain           - show certificate chain. This is the default. To disable
                            use --no-show-chain.
-  --dump_chain           - dump certificate chain, e.g. all certificates as PEM
+  --dump-chain           - dump certificate chain, e.g. all certificates as PEM
 
 Examples:
 
